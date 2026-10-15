@@ -24,12 +24,16 @@ import { AnalysisLauncher } from './analysis-launcher.js';
 import {
   graphKey,
   HEARTBEAT_TIMEOUT_MS,
+  viewKey,
   toAnalysis,
   type Analysis,
   type GraphItem,
   type ProjectAnalysis,
   type SavedGraph,
+  type SavedView,
+  type ViewItem,
 } from './analysis.entity.js';
+import type { ViewId } from '../analyzer/views/view-graph.js';
 
 @Injectable()
 export class AnalysesService {
@@ -148,6 +152,27 @@ export class AnalysesService {
     }
     const { analysisId, graph } = Item as GraphItem;
     return { projectId, analysisId, ...graph };
+  }
+
+  // One explore view from the latest completed run.
+  async findView(
+    userId: string,
+    projectId: string,
+    view: ViewId,
+  ): Promise<SavedView> {
+    const { Item } = await this.db.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { PK: userKey(userId), SK: viewKey(projectId, view) },
+      }),
+    );
+    if (!Item) {
+      throw new NotFoundException(
+        "This view wasn't built for this project's latest analysis.",
+      );
+    }
+    const { analysisId, graph } = Item as ViewItem;
+    return { projectId, analysisId, view, ...graph };
   }
 
   private async markLaunchFailed(

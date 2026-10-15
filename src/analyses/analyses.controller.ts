@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { CognitoAuthGuard, type AuthUser } from '../auth/cognito-auth.guard.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
+import { isViewId } from '../analyzer/views/view-graph.js';
 import { AnalysesService } from './analyses.service.js';
 
 @Controller('projects/:projectId')
@@ -44,5 +46,17 @@ export class AnalysesController {
     @Param('projectId', ParseUUIDPipe) projectId: string,
   ) {
     return this.analysesService.findGraph(user.sub, projectId);
+  }
+
+  // One explore view (e.g. `ci-cd`) from the latest completed analysis; the analysis's
+  // `views` says which ones exist.
+  @Get('views/:view')
+  findView(
+    @CurrentUser() user: AuthUser,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('view') view: string,
+  ) {
+    if (!isViewId(view)) throw new NotFoundException('Unknown view');
+    return this.analysesService.findView(user.sub, projectId, view);
   }
 }

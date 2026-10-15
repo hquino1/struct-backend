@@ -5,6 +5,7 @@ import type { Component } from './architecture.js';
 import {
   buildMapDigest,
   buildTraceDigest,
+  scanCode,
   componentLocator,
 } from './repo-digest.js';
 import { listRepositoryFiles } from './repository.js';
@@ -74,11 +75,13 @@ describe('repo digests', () => {
     );
     await file('auth/token.ts', "export const verify = () => 'ok';");
 
-    const { digest, fileCounts } = await buildTraceDigest(
+    const components = [component('api', ['api']), component('auth', ['auth'])];
+    const facts = await scanCode(
       dir,
       await listRepositoryFiles(dir),
-      [component('api', ['api']), component('auth', ['auth'])],
+      components,
     );
+    const { digest, fileCounts } = buildTraceDigest(components, facts);
 
     expect(fileCounts).toEqual({ api: 1, auth: 1 });
     expect(digest).toContain(

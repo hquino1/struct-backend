@@ -12,7 +12,7 @@ const MAX_TREE_LINES = 3_000;
 // Source files larger than this are skipped when tracing imports (minified or generated).
 const MAX_TRACE_FILE_BYTES = 256_000;
 
-async function readText(dir: string, path: string, maxBytes: number) {
+export async function readText(dir: string, path: string, maxBytes: number) {
   const handle = await open(join(dir, path), 'r');
   try {
     const buffer = Buffer.alloc(maxBytes);
@@ -151,7 +151,11 @@ const RESOLVE_SUFFIXES = [
 ];
 
 // Resolves a relative or `@/` / `~/` aliased JS import to a repository file.
-function resolveJsImport(from: string, spec: string, files: Set<string>) {
+export function resolveJsImport(
+  from: string,
+  spec: string,
+  files: Set<string>,
+) {
   let base: string;
   if (spec.startsWith('.')) {
     base = posix.join(posix.dirname(from), spec);
@@ -190,18 +194,24 @@ const packageName = (spec: string) => {
 };
 
 // Tests import fixtures and mocks, which would read as real dependencies.
-const isTestFile = (path: string) =>
+export const isTestFile = (path: string) =>
   /\.(spec|test)\.[cm]?[jt]sx?$|(^|\/)(tests?|__tests__|__mocks__)\/|(^|\/)test_[^/]*\.py$|_test\.py$/.test(
     path,
   );
 
-interface ComponentFacts {
+export interface ComponentFacts {
   files: number;
+  // Other components this one's code imports, by component id.
   dependsOn: Map<string, { count: number; example: string }>;
+  // Packages its code imports (npm names, Python top-level modules), with import counts.
   packages: Map<string, number>;
   envVars: Set<string>;
   hosts: Set<string>;
 }
+
+// What a component's code uses, by component id. Read once and shared by the trace step
+// and the explore views.
+export type CodeFacts = Map<string, ComponentFacts>;
 
 const increment = (map: Map<string, number>, key: string) =>
   map.set(key, (map.get(key) ?? 0) + 1);
@@ -213,14 +223,14 @@ const top = (map: Map<string, number>, n: number) =>
     .map(([key, count]) => `${key} (${count})`)
     .join(', ');
 
-// Input for the trace step: per component, which other components its code imports and
-// which packages, environment variables, and hosts it uses. Computed in code, so Claude
-// infers connections from evidence rather than guessing from file names.
-export async function buildTraceDigest(
+// Per component, which other components its code imports and which packages, environment
+// variables, and hosts it uses. Computed in code, so Claude infers connections from
+// evidence rather than guessing from file names.
+export async function scanCode(
   dir: string,
   paths: string[],
   components: Component[],
-) {
+): Promise<CodeFacts> {
   const locate = componentLocator(components);
   const files = new Set(paths);
   const topLevelNames = new Set(paths.map((p) => p.split('/')[0]));
@@ -295,6 +305,11 @@ export async function buildTraceDigest(
     }
   }
 
+  return facts;
+}
+
+// Input for the trace step, written from the scanned facts.
+export function buildTraceDigest(components: Component[], facts: CodeFacts) {
   const sections = components.map((c) => {
     const fact = facts.get(c.id)!;
     const lines = [

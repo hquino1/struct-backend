@@ -15,9 +15,12 @@ import { join } from 'node:path';
 import type { AnalysisJob } from '../analyses/analysis-launcher.js';
 import {
   graphKey,
+  viewKey,
   type AnalysisStep,
+  type AnalysisViews,
   type GraphItem,
   type ProjectAnalysis,
+  type ViewItem,
 } from '../analyses/analysis.entity.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
 import { projectKey, userKey } from '../projects/project.entity.js';
@@ -30,19 +33,26 @@ import {
 } from './architecture.js';
 import { LlmService } from './llm.service.js';
 import { INSIGHTS_SYSTEM, MAP_SYSTEM, TRACE_SYSTEM } from './prompts.js';
-import { buildMapDigest, buildTraceDigest } from './repo-digest.js';
+import { buildMapDigest, buildTraceDigest, scanCode } from './repo-digest.js';
 import {
   AnalysisError,
   cloneRepository,
   listRepositoryFiles,
   scanRepository,
 } from './repository.js';
+import { VIEW_EXTRACTORS } from './views/extractors.js';
+import type { ViewContext, ViewGraph, ViewId } from './views/view-graph.js';
 
 // Well inside HEARTBEAT_TIMEOUT_MS, so a slow step never looks like a dead task.
 const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 // Keeps the graph comfortably under DynamoDB's 400 KB item limit.
 const MAX_GRAPH_BYTES = 350_000;
+
+interface BuiltViews {
+  status: AnalysisViews;
+  graphs: Partial<Record<ViewId, ViewGraph>>;
+}
 
 // Thrown when a newer run has replaced this one; the old worker just stops.
 class SupersededError extends Error {}
@@ -83,24 +93,30 @@ export class AnalyzerService {
       const components = await this.mapComponents(repoDir, paths);
 
       await this.setStep(job, 'trace');
-      const { digest, fileCounts } = await buildTraceDigest(
-        repoDir,
-        paths,
-        components,
-      );
-      const connections = await this.traceConnections(components, digest);
+      // One read of the code serves both the trace and the explore views. The views need no
+      // model call, so they finish while the trace waits on the model.
+      const facts = await scanCode(repoDir, paths, components);
+      const { digest, fileCounts } = buildTraceDigest(components, facts);
+      const [connections, views] = await Promise.all([
+        this.traceConnections(components, digest),
+        this.buildViews({ repoDir, paths, components, facts, llm: this.llm }),
+      ]);
 
       await this.setStep(job, 'insights');
       const insights = await this.generateInsights(components, connections);
 
-      await this.complete(job, {
-        components: components.map((c) => ({
-          ...c,
-          files: fileCounts[c.id] ?? 0,
-        })),
-        connections,
-        insights,
-      });
+      await this.complete(
+        job,
+        {
+          components: components.map((c) => ({
+            ...c,
+            files: fileCounts[c.id] ?? 0,
+          })),
+          connections,
+          insights,
+        },
+        views,
+      );
       this.logger.log(`Analysis ${job.analysisId} complete`);
       return true;
     } catch (err) {
@@ -126,6 +142,41 @@ export class AnalyzerService {
       clearInterval(heartbeat);
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  // Builds every view that applies. A view that fails is reported as FAILED rather than
+  // failing the analysis: the architecture map is still worth saving.
+  private async buildViews(context: ViewContext): Promise<BuiltViews> {
+    const built: BuiltViews = { status: {}, graphs: {} };
+    await Promise.all(
+      VIEW_EXTRACTORS.map(async (extractor) => {
+        const { view } = extractor;
+        if (!extractor.applies(context.paths)) {
+          built.status[view] = 'NOT_APPLICABLE';
+          return;
+        }
+        try {
+          const graph = await extractor.extract(context);
+          if (!graph.nodes.length) {
+            built.status[view] = 'NOT_APPLICABLE';
+          } else if (
+            Buffer.byteLength(JSON.stringify(graph)) > MAX_GRAPH_BYTES
+          ) {
+            this.logger.warn(`View ${view} is too large to save`);
+            built.status[view] = 'FAILED';
+          } else {
+            built.status[view] = 'COMPLETE';
+            built.graphs[view] = graph;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `View ${view} failed: ${(err as Error).stack ?? String(err)}`,
+          );
+          built.status[view] = 'FAILED';
+        }
+      }),
+    );
+    return built;
   }
 
   private async mapComponents(repoDir: string, paths: string[]) {
@@ -205,7 +256,11 @@ export class AnalyzerService {
 
   // Saves the graph and marks the run complete in one transaction, so a run that a newer
   // one has replaced can't overwrite the newer graph.
-  private async complete(job: AnalysisJob, graph: ArchitectureGraph) {
+  private async complete(
+    job: AnalysisJob,
+    graph: ArchitectureGraph,
+    views: BuiltViews,
+  ) {
     const item: GraphItem = {
       PK: userKey(job.userId),
       SK: graphKey(job.projectId),
@@ -218,11 +273,28 @@ export class AnalyzerService {
       );
     }
     const now = new Date().toISOString();
+    // Each view is replaced, or deleted when this run didn't build it, so a view never
+    // outlives the run it came from.
+    const viewWrites = VIEW_EXTRACTORS.map(({ view }) => {
+      const key = { PK: userKey(job.userId), SK: viewKey(job.projectId, view) };
+      const viewGraph = views.graphs[view];
+      if (!viewGraph) {
+        return { Delete: { TableName: this.tableName, Key: key } };
+      }
+      const viewItem: ViewItem = {
+        ...key,
+        analysisId: job.analysisId,
+        view,
+        graph: viewGraph,
+      };
+      return { Put: { TableName: this.tableName, Item: viewItem } };
+    });
     try {
       await this.db.send(
         new TransactWriteCommand({
           TransactItems: [
             { Put: { TableName: this.tableName, Item: item } },
+            ...viewWrites,
             {
               Update: {
                 TableName: this.tableName,
@@ -231,15 +303,17 @@ export class AnalyzerService {
                   SK: projectKey(job.projectId),
                 },
                 UpdateExpression:
-                  'SET #analysis.#status = :complete, #analysis.finishedAt = :now, #analysis.heartbeatAt = :now',
+                  'SET #analysis.#status = :complete, #analysis.finishedAt = :now, #analysis.heartbeatAt = :now, #analysis.#views = :views',
                 ConditionExpression: '#analysis.analysisId = :analysisId',
                 ExpressionAttributeNames: {
                   '#analysis': 'analysis',
                   '#status': 'status',
+                  '#views': 'views',
                 },
                 ExpressionAttributeValues: {
                   ':complete': 'COMPLETE',
                   ':now': now,
+                  ':views': views.status,
                   ':analysisId': job.analysisId,
                 },
               },

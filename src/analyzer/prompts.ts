@@ -25,6 +25,22 @@ Point each connection from the component that initiates it to the one it depends
 
 Answer by calling the record_connections tool.`;
 
+export const SCHEMA_SYSTEM = `${ROLE}
+
+You will receive source files that define how this system stores data: ORM entity classes, document schemas, table definitions, or code that builds database keys. Work out the data model:
+- Each persisted table, collection, or item type is an entity. Skip DTOs, API request types, and in-memory types that are never stored.
+- For key-value and single-table designs (e.g. DynamoDB), each item type is an entity of kind "item": give its partition and sort key fields with their key patterns (e.g. "USER#<userId>"), and name the physical table in "store".
+- Relations: foreign keys and ORM associations; for single-table designs, item types grouped under another's partition key (e.g. projects under a user).
+Use only what the code shows; don't invent fields.
+
+Answer by calling the record_schema tool.`;
+
+export const API_MATCH_SYSTEM = `${ROLE}
+
+You will receive the HTTP routes a repository serves and calls from its code whose paths didn't match any route exactly, each with a short snippet. For each call, decide which route it reaches, if any. Paths may differ by a prefix that is added elsewhere (a router mounted under "/api", a base URL, a proxy rewrite), and ":param" stands for any segment. Leave out calls to other services and calls you can't place with confidence.
+
+Answer by calling the record_matches tool.`;
+
 export const INSIGHTS_SYSTEM = `${ROLE}
 
 You will receive a system's components and the connections between them. Write the insights a senior engineer joining the team would most want to know: central components and bottlenecks, risky coupling or circular dependencies, missing boundaries, and things the codebase does well. Be concrete and name the components involved; skip generic advice that would apply to any codebase.

@@ -1,4 +1,9 @@
 import type { ArchitectureGraph } from '../analyzer/architecture.js';
+import type {
+  ViewGraph,
+  ViewId,
+  ViewStatus,
+} from '../analyzer/views/view-graph.js';
 
 // Shared by the API (which starts and reads analyses) and the worker (which runs them).
 
@@ -32,7 +37,11 @@ export interface ProjectAnalysis {
   commit?: string;
   stats?: AnalysisStats;
   error?: string;
+  // Which explore views the run built; set when it completes.
+  views?: AnalysisViews;
 }
+
+export type AnalysisViews = Partial<Record<ViewId, ViewStatus>>;
 
 export const NOT_STARTED: ProjectAnalysis = {
   status: 'NOT_STARTED',
@@ -50,6 +59,7 @@ export interface Analysis {
   commit?: string;
   stats?: AnalysisStats;
   error?: string;
+  views?: AnalysisViews;
 }
 
 // The latest completed run's architecture graph: SK = GRAPH#<projectId>. Kept off the
@@ -67,6 +77,26 @@ export interface GraphItem {
 export interface SavedGraph extends ArchitectureGraph {
   projectId: string;
   analysisId: string;
+}
+
+// One explore view from the latest completed run: SK = VIEW#<projectId>#<view>. Each view
+// is its own item so none can push another past DynamoDB's 400 KB item limit, and the
+// frontend downloads only the views it opens.
+export const viewKey = (projectId: string, view: ViewId) =>
+  `VIEW#${projectId}#${view}`;
+
+export interface ViewItem {
+  PK: string;
+  SK: string;
+  analysisId: string;
+  view: ViewId;
+  graph: ViewGraph;
+}
+
+export interface SavedView extends ViewGraph {
+  projectId: string;
+  analysisId: string;
+  view: ViewId;
 }
 
 // Covers Fargate startup (image pull) plus the longest gap between worker heartbeats.
@@ -108,5 +138,6 @@ export const toAnalysis = (
     commit: analysis.commit,
     stats: analysis.stats,
     error: analysis.error,
+    views: analysis.views,
   };
 };
