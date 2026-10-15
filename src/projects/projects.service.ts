@@ -6,6 +6,7 @@ import {
   QueryCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
+import { NOT_STARTED } from '../analyses/analysis.entity.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
 import { CreateProjectDto, GITHUB_REPO_URL } from './dto/create-project.dto.js';
 import {
@@ -37,6 +38,8 @@ export class ProjectsService {
       repoUrl: `https://github.com/${repoOwner}/${repoName}`,
       branch: dto.branch?.trim() || 'main',
       createdAT: new Date().toISOString(),
+      // Status and step are filled in once the first analysis starts.
+      analysis: NOT_STARTED,
     };
 
     await this.db.send(
