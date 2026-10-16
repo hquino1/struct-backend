@@ -7,6 +7,7 @@ import type { CodeFacts } from '../repo-digest.js';
 // file must stay free of worker-only dependencies.
 
 export const VIEW_IDS = [
+  'screens',
   'dependencies',
   'schema',
   'api',

@@ -4,11 +4,13 @@ import { ciCdExtractor } from './ci-cd.js';
 import { dependenciesExtractor } from './dependencies.js';
 import { infrastructureExtractor } from './infrastructure/index.js';
 import { schemaExtractor } from './schema/index.js';
+import { screensExtractor } from './screens/index.js';
 import type { ViewExtractor } from './view-graph.js';
 
 // One per view the worker builds. Adding a view: write its extractor, add its id to
 // VIEW_IDS, and register it here.
 export const VIEW_EXTRACTORS: ViewExtractor[] = [
+  screensExtractor,
   dependenciesExtractor,
   schemaExtractor,
   apiExtractor,

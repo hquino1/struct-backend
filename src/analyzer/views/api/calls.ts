@@ -11,6 +11,8 @@ export interface Call {
   host?: string;
   file: string;
   line: number;
+  // Where the call starts in the file's text.
+  offset: number;
   snippet: string;
 }
 
@@ -80,6 +82,7 @@ export function findCalls(
         ...(host && { host }),
         file,
         line: lineAt(text, index),
+        offset: index,
         snippet: text
           .slice(index, index + 160)
           .split('\n')
