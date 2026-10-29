@@ -1,0 +1,32 @@
+{
+  "family": "struct-analyzer",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": { "operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64" },
+  "executionRoleArn": "arn:aws:iam::094289742685:role/struct-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::094289742685:role/struct-analyzer-task-role",
+  "containerDefinitions": [
+    {
+      "name": "analyzer",
+      "image": "094289742685.dkr.ecr.us-east-2.amazonaws.com/struct-backend:latest",
+      "essential": true,
+      "command": ["node", "dist/worker.js"],
+      "environment": [
+        { "name": "AWS_REGION", "value": "us-east-2" },
+        { "name": "DYNAMODB_PROJECTS_TABLE", "value": "struct" },
+        { "name": "BEDROCK_MODEL", "value": "qwen.qwen3-coder-480b-a35b-v1:0" },
+        { "name": "BEDROCK_FALLBACK_MODEL", "value": "us.amazon.nova-2-lite-v1:0" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/struct-analyzer",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "analyzer"
+        }
+      }
+    }
+  ]
+}

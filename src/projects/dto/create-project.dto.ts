@@ -6,7 +6,8 @@ export const GITHUB_REPO_URL =
 export class CreateProjectDto {
   @IsString()
   @Matches(GITHUB_REPO_URL, {
-    message: 'repoUrl must be a GitHub repository URL like https://github.com/owner/repo',
+    message:
+      'repoUrl must be a GitHub repository URL like https://github.com/owner/repo',
   })
   repoUrl: string;
 

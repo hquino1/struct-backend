@@ -1,0 +1,40 @@
+{
+  "family": "struct-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64" },
+  "executionRoleArn": "arn:aws:iam::094289742685:role/struct-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::094289742685:role/struct-api-task-role",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "094289742685.dkr.ecr.us-east-2.amazonaws.com/struct-backend:latest",
+      "essential": true,
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp" }],
+      "environment": [
+        { "name": "PORT", "value": "3000" },
+        { "name": "AWS_REGION", "value": "us-east-2" },
+        { "name": "CORS_ORIGIN", "value": "http://localhost:8080" },
+        { "name": "DYNAMODB_PROJECTS_TABLE", "value": "struct" },
+        { "name": "COGNITO_USER_POOL_ID", "value": "us-east-2_o5P6JAFRX" },
+        { "name": "COGNITO_CLIENT_ID", "value": "1sl1hc6admp0vbt0med838sdke" },
+        { "name": "ANALYSIS_RUNNER", "value": "ecs" },
+        { "name": "ANALYZER_CLUSTER", "value": "struct-cluster" },
+        { "name": "ANALYZER_TASK_DEFINITION", "value": "struct-analyzer" },
+        { "name": "ANALYZER_CONTAINER_NAME", "value": "analyzer" },
+        { "name": "ANALYZER_SUBNETS", "value": "subnet-0f13d0bc13ba303be,subnet-0bfdf3d44bd5e5cf3,subnet-0771ab1e55bc52f91" },
+        { "name": "ANALYZER_SECURITY_GROUPS", "value": "sg-0b7e1031ed9038bd5" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/struct-api",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    }
+  ]
+}
