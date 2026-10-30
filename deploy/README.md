@@ -114,8 +114,9 @@ Then point the frontend at `http://$dns` and start an analysis. If it fails, che
   US regions.
 - **Claude models:** a bare `anthropic.claude-*` model ID goes through a different Bedrock endpoint
   (see `src/analyzer/llm.service.ts`) and may need extra permissions in the analyzer policy.
-- **HTTPS:** the ALB listens on HTTP only. If the frontend is served over HTTPS, browsers block calls
-  to an HTTP API, so you'll need a domain, an ACM certificate and a 443 listener (or put the API
-  behind Cloudflare).
+- **HTTPS (2026-10-30):** the API is now served at `/api` (global prefix) through the frontend's
+  CloudFront distribution, which reaches a new **internal** ALB (`struct-alb-internal`, target group
+  `struct-api-internal`, health check `/api`) via a VPC origin. See `frontend/deploy/README.md`. The
+  public `struct-alb` from step 6 is no longer used by the service.
 - **Cost:** the ALB (~$16/month) and the API task run continuously; analyzer tasks are billed only
   while they run.

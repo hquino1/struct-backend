@@ -10,7 +10,12 @@
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:hquino1/struct-backend:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": [
+            "repo:hquino1@143025124/struct-backend@1419453129:ref:refs/heads/main",
+            "repo:hquino1/struct-backend:ref:refs/heads/main",
+            "repo:hquino1@143025124/struct-frontend@1417670131:ref:refs/heads/main",
+            "repo:hquino1/struct-frontend:ref:refs/heads/main"
+          ]
         }
       }
     }

@@ -48,8 +48,31 @@
         "arn:aws:iam::094289742685:role/struct-analyzer-task-role"
       ],
       "Condition": {
-        "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+        "StringEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
       }
+    },
+    {
+      "Sid": "FrontendBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::struct-frontend-094289742685"
+    },
+    {
+      "Sid": "FrontendObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::struct-frontend-094289742685/*"
+    },
+    {
+      "Sid": "FrontendInvalidation",
+      "Effect": "Allow",
+      "Action": "cloudfront:CreateInvalidation",
+      "Resource": "arn:aws:cloudfront::094289742685:distribution/E1GJMLZYXXMPZG"
     }
   ]
 }

@@ -21,7 +21,9 @@
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::094289742685:role/struct-*",
       "Condition": {
-        "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+        "StringEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
       }
     },
     {
@@ -32,6 +34,12 @@
         "iam:GetOpenIDConnectProvider",
         "iam:ListOpenIDConnectProviders"
       ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DebugSignIns",
+      "Effect": "Allow",
+      "Action": "cloudtrail:LookupEvents",
       "Resource": "*"
     },
     {
