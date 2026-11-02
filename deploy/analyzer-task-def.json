@@ -17,7 +17,11 @@
         { "name": "AWS_REGION", "value": "us-east-2" },
         { "name": "DYNAMODB_PROJECTS_TABLE", "value": "struct" },
         { "name": "BEDROCK_MODEL", "value": "qwen.qwen3-coder-480b-a35b-v1:0" },
-        { "name": "BEDROCK_FALLBACK_MODEL", "value": "us.amazon.nova-2-lite-v1:0" }
+        { "name": "BEDROCK_FALLBACK_MODEL", "value": "us.amazon.nova-2-lite-v1:0" },
+        { "name": "GITHUB_APP_ID", "value": "5582602" }
+      ],
+      "secrets": [
+        { "name": "GITHUB_APP_PRIVATE_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-2:094289742685:secret:struct/github-app-private-key-26eGe8" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

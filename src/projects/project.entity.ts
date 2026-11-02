@@ -13,6 +13,8 @@ export interface ProjectItem {
   repoUrl: string;
   branch: string;
   createdAT: string;
+  // Set for private repositories, which the worker clones through this GitHub App installation.
+  installationId?: number;
   // Latest analysis run; missing on projects created before analysis existed.
   analysis?: ProjectAnalysis;
 }
@@ -23,6 +25,8 @@ export interface Project {
   repoUrl: string;
   branch: string;
   createdAt: string;
+  // Read through the Struct GitHub App rather than anonymously.
+  private: boolean;
   analysisStatus: ProjectAnalysis['status'];
   // The step the latest run is on (or stopped at); null before the first run.
   analysisStep: AnalysisStep | null;
@@ -41,6 +45,7 @@ export const toProject = (item: ProjectItem): Project => {
     repoUrl: item.repoUrl,
     branch: item.branch,
     createdAt: item.createdAT,
+    private: item.installationId !== undefined,
     analysisStatus: analysis?.status ?? NOT_STARTED.status,
     analysisStep: analysis?.step ?? null,
   };

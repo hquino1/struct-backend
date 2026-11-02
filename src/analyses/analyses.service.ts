@@ -15,6 +15,8 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
+import { GitHubService } from '../github/github.service.js';
+import { GITHUB_REPO_URL } from '../projects/dto/create-project.dto.js';
 import {
   projectKey,
   userKey,
@@ -43,12 +45,16 @@ export class AnalysesService {
   constructor(
     @Inject(DYNAMODB_CLIENT) private readonly db: DynamoDBDocumentClient,
     private readonly launcher: AnalysisLauncher,
+    private readonly github: GitHubService,
     config: ConfigService,
   ) {
     this.tableName = config.getOrThrow<string>('DYNAMODB_PROJECTS_TABLE');
   }
 
   async start(userId: string, projectId: string): Promise<Analysis> {
+    // Checked before queuing, so a refused run leaves the previous analysis as it was.
+    await this.assertCanRead(userId, projectId);
+
     const now = new Date();
     const analysis: ProjectAnalysis = {
       status: 'QUEUED',
@@ -106,6 +112,7 @@ export class AnalysesService {
         analysisId,
         repoUrl: project.repoUrl,
         branch: project.branch,
+        installationId: project.installationId,
       });
     } catch (err) {
       this.logger.error(
@@ -173,6 +180,22 @@ export class AnalysesService {
     }
     const { analysisId, graph } = Item as ViewItem;
     return { projectId, analysisId, view, ...graph };
+  }
+
+  // Private repositories are re-checked on GitHub every run; public ones need no check.
+  private async assertCanRead(userId: string, projectId: string) {
+    const { Item } = await this.db.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { PK: userKey(userId), SK: projectKey(projectId) },
+        ProjectionExpression: 'repoUrl, installationId',
+      }),
+    );
+    if (!Item) throw new NotFoundException('Project not found');
+    const { repoUrl, installationId } = Item as ProjectItem;
+    if (installationId === undefined) return;
+    const [, owner, repo] = GITHUB_REPO_URL.exec(repoUrl)!;
+    await this.github.assertCanRead(userId, owner, repo, installationId);
   }
 
   private async markLaunchFailed(

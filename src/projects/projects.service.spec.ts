@@ -1,10 +1,11 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
 } from '@aws-sdk/client-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import type { GitHubService } from '../github/github.service.js';
 import { ProjectsService } from './projects.service.js';
 import type { ProjectItem } from './project.entity.js';
 
@@ -19,15 +20,62 @@ const item: ProjectItem = {
   analysis: { status: 'NOT_STARTED', step: null },
 };
 
-const setup = (send: (command: { input: any }) => unknown) => {
+const setup = (
+  send: (command: { input: any }) => unknown,
+  resolveRepository: () => Promise<number | undefined> = async () => undefined,
+) => {
   const db = { send: vi.fn(send) };
   const config = { getOrThrow: () => 'projects' } as unknown as ConfigService;
+  const github = { resolveRepository: vi.fn(resolveRepository) };
   const service = new ProjectsService(
     db as unknown as DynamoDBDocumentClient,
     config,
+    github as unknown as GitHubService,
   );
-  return { db, service };
+  return { db, github, service };
 };
+
+describe('ProjectsService.create', () => {
+  it('saves a public repository without an installation', async () => {
+    const { db, github, service } = setup(() => ({}));
+
+    const project = await service.create('u1', {
+      repoUrl: 'https://github.com/acme/shop.git',
+    });
+
+    expect(github.resolveRepository).toHaveBeenCalledWith('u1', 'acme', 'shop');
+    expect(project).toMatchObject({ name: 'shop', private: false });
+    expect(db.send.mock.calls[0][0].input.Item.installationId).toBeUndefined();
+  });
+
+  it('saves the installation that reads a private repository', async () => {
+    const { db, service } = setup(
+      () => ({}),
+      async () => 42,
+    );
+
+    const project = await service.create('u1', {
+      repoUrl: 'https://github.com/acme/secret',
+    });
+
+    expect(project.private).toBe(true);
+    expect(db.send.mock.calls[0][0].input.Item.installationId).toBe(42);
+  });
+
+  it("saves nothing when the user can't read the repository", async () => {
+    const { db, service } = setup(
+      () => ({}),
+      async () => {
+        throw new ForbiddenException('no access');
+      },
+    );
+
+    await expect(
+      service.create('u1', { repoUrl: 'https://github.com/acme/secret' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(db.send).not.toHaveBeenCalled();
+  });
+});
 
 describe('ProjectsService.update', () => {
   it('sets only the fields given, trimmed, on an existing project', async () => {

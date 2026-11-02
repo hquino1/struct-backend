@@ -23,6 +23,8 @@ import {
   type ViewItem,
 } from '../analyses/analysis.entity.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
+import { GitHubAppService } from '../github/github-app.service.js';
+import { GITHUB_REPO_URL } from '../projects/dto/create-project.dto.js';
 import { projectKey, userKey } from '../projects/project.entity.js';
 import {
   ComponentsResult,
@@ -65,6 +67,7 @@ export class AnalyzerService {
   constructor(
     @Inject(DYNAMODB_CLIENT) private readonly db: DynamoDBDocumentClient,
     private readonly llm: LlmService,
+    private readonly github: GitHubAppService,
     config: ConfigService,
   ) {
     this.tableName = config.getOrThrow<string>('DYNAMODB_PROJECTS_TABLE');
@@ -83,7 +86,12 @@ export class AnalyzerService {
     try {
       const repoDir = join(workDir, 'repo');
       await this.setStep(job, 'clone');
-      const commit = await cloneRepository(job.repoUrl, job.branch, repoDir);
+      const commit = await cloneRepository(
+        job.repoUrl,
+        job.branch,
+        repoDir,
+        await this.cloneToken(job),
+      );
 
       await this.setStep(job, 'detect', { commit });
       const paths = await listRepositoryFiles(repoDir);
@@ -141,6 +149,22 @@ export class AnalyzerService {
     } finally {
       clearInterval(heartbeat);
       await rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  // A read-only token for this one repository when it's private; none for public ones.
+  private async cloneToken(job: AnalysisJob): Promise<string | undefined> {
+    if (job.installationId === undefined) return undefined;
+    const [, , repo] = GITHUB_REPO_URL.exec(job.repoUrl)!;
+    try {
+      return await this.github.repositoryToken(job.installationId, repo, {
+        contents: 'read',
+      });
+    } catch (err) {
+      this.logger.error(`Repository token failed: ${(err as Error).message}`);
+      throw new AnalysisError(
+        'Struct no longer has access to this repository. Install the Struct GitHub App on it again.',
+      );
     }
   }
 

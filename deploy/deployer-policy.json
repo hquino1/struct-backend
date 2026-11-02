@@ -93,6 +93,17 @@
       "Resource": "*"
     },
     {
+      "Sid": "StructSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-2:094289742685:secret:struct/*"
+    },
+    {
       "Sid": "Ecs",
       "Effect": "Allow",
       "Action": [

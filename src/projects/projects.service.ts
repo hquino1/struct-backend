@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { graphKey, NOT_STARTED, viewKey } from '../analyses/analysis.entity.js';
 import { VIEW_IDS } from '../analyzer/views/view-graph.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
+import { GitHubService } from '../github/github.service.js';
 import { CreateProjectDto, GITHUB_REPO_URL } from './dto/create-project.dto.js';
 import { UpdateProjectDto } from './dto/update-project.dto.js';
 import {
@@ -33,6 +34,7 @@ export class ProjectsService {
   constructor(
     @Inject(DYNAMODB_CLIENT) private readonly db: DynamoDBDocumentClient,
     config: ConfigService,
+    private readonly github: GitHubService,
   ) {
     this.tableName = config.getOrThrow<string>('DYNAMODB_PROJECTS_TABLE');
   }
@@ -40,6 +42,12 @@ export class ProjectsService {
   async create(userId: string, dto: CreateProjectDto): Promise<Project> {
     // The DTO already validated the URL, so the match always succeeds.
     const [, repoOwner, repoName] = GITHUB_REPO_URL.exec(dto.repoUrl)!;
+    // Throws if the repository is private and the user can't read it on GitHub.
+    const installationId = await this.github.resolveRepository(
+      userId,
+      repoOwner,
+      repoName,
+    );
     const item: ProjectItem = {
       PK: userKey(userId),
       SK: projectKey(randomUUID()),
@@ -47,6 +55,7 @@ export class ProjectsService {
       repoUrl: `https://github.com/${repoOwner}/${repoName}`,
       branch: dto.branch?.trim() || 'main',
       createdAT: new Date().toISOString(),
+      installationId,
       // Status and step are filled in once the first analysis starts.
       analysis: NOT_STARTED,
     };

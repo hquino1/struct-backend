@@ -17,6 +17,9 @@ function readJob(): AnalysisJob {
     analysisId: get('ANALYSIS_ID'),
     repoUrl: get('REPO_URL'),
     branch: get('BRANCH'),
+    ...(process.env.INSTALLATION_ID && {
+      installationId: Number(process.env.INSTALLATION_ID),
+    }),
   };
 }
 

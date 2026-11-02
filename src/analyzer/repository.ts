@@ -9,11 +9,21 @@ const run = promisify(execFile);
 // An error whose message is safe and useful to show the user as the failure reason.
 export class AnalysisError extends Error {}
 
-// Shallow clone of a single branch; returns the commit SHA it checked out.
+// Git config that sends a GitHub token with every request to github.com, through the
+// environment so it stays out of the command line and the clone's .git/config.
+export const githubAuthEnv = (token: string) => ({
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+  GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+});
+
+// Shallow clone of a single branch; returns the commit SHA it checked out. `token` is an
+// installation token for private repositories.
 export async function cloneRepository(
   repoUrl: string,
   branch: string,
   dir: string,
+  token?: string,
 ): Promise<string> {
   try {
     await run(
@@ -31,12 +41,18 @@ export async function cloneRepository(
       {
         timeout: 10 * 60 * 1000,
         // Fail on private repos instead of waiting for credentials that never come.
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          ...(token && githubAuthEnv(token)),
+        },
       },
     );
   } catch {
     throw new AnalysisError(
-      `Couldn't clone branch "${branch}". Check that the repository is public and the branch exists.`,
+      token
+        ? `Couldn't clone branch "${branch}". Check that the branch exists.`
+        : `Couldn't clone branch "${branch}". Check that the branch exists, and that the repository is public or the Struct GitHub App is installed on it.`,
     );
   }
   const { stdout } = await run('git', ['rev-parse', 'HEAD'], { cwd: dir });

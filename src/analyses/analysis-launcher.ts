@@ -10,15 +10,21 @@ export interface AnalysisJob {
   analysisId: string;
   repoUrl: string;
   branch: string;
+  // Present for private repositories; the worker exchanges it for a token itself, so no
+  // credential passes through ECS task overrides.
+  installationId?: number;
 }
 
 // The worker reads its job from these variables (see worker.ts).
-export const jobEnvironment = (job: AnalysisJob) => ({
+export const jobEnvironment = (job: AnalysisJob): Record<string, string> => ({
   USER_ID: job.userId,
   PROJECT_ID: job.projectId,
   ANALYSIS_ID: job.analysisId,
   REPO_URL: job.repoUrl,
   BRANCH: job.branch,
+  ...(job.installationId !== undefined && {
+    INSTALLATION_ID: String(job.installationId),
+  }),
 });
 
 // Starts the worker outside the API process: as a Fargate task in AWS, or as a child

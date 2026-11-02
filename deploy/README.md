@@ -10,6 +10,7 @@ steps below), then the GitHub Actions pipeline reuses the two task definition fi
 | `analyzer-task-role-policy.json` | Analyzer: DynamoDB, Bedrock |
 | `api-task-def.json` | `struct-api` task (port 3000) |
 | `analyzer-task-def.json` | `struct-analyzer` task (`node dist/worker.js`) |
+| `execution-role-secrets-policy.json` | Execution role: read the GitHub App secrets into both tasks |
 
 Run everything from `backend/deploy/` in PowerShell, as an IAM user with `deployer-policy.json`
 attached. Every command passes `--region us-east-2` because the CLI's default region is us-east-1.
@@ -23,6 +24,8 @@ groups ALB `sg-0ca35ad699e1d3b72`, API `sg-0b1570fac13478b7a`, analyzer `sg-0b7e
 # Execution role: pulls the image from ECR and writes logs
 aws iam create-role --role-name struct-ecs-execution-role --assume-role-policy-document file://ecs-tasks-trust-policy.json
 aws iam attach-role-policy --role-name struct-ecs-execution-role --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+# ...and injects the GitHub App secrets (see Notes)
+aws iam put-role-policy --role-name struct-ecs-execution-role --policy-name struct-secrets --policy-document file://execution-role-secrets-policy.json
 
 # Task roles: what the app code itself can do
 aws iam create-role --role-name struct-api-task-role --assume-role-policy-document file://ecs-tasks-trust-policy.json
@@ -118,5 +121,12 @@ Then point the frontend at `http://$dns` and start an analysis. If it fails, che
   CloudFront distribution, which reaches a new **internal** ALB (`struct-alb-internal`, target group
   `struct-api-internal`, health check `/api`) via a VPC origin. See `frontend/deploy/README.md`. The
   public `struct-alb` from step 6 is no longer used by the service.
+- **GitHub App (2026-11-02), for private repositories:** the app's ID, slug, and client ID are plain
+  values in the task definitions. The client secret and private key live in Secrets Manager as
+  `struct/github-client-secret` and `struct/github-app-private-key`, injected through each task
+  definition's `secrets` block (the analyzer only needs the key). Their ARNs end in a random suffix,
+  so a recreated secret means updating both task definitions and `execution-role-secrets-policy.json`.
+  The app's Callback URLs are `https://d1ffqnowqt49bs.cloudfront.net/github/callback` and
+  `http://localhost:8080/github/callback`.
 - **Cost:** the ALB (~$16/month) and the API task run continuously; analyzer tasks are billed only
   while they run.

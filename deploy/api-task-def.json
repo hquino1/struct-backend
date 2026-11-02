@@ -25,7 +25,14 @@
         { "name": "ANALYZER_TASK_DEFINITION", "value": "struct-analyzer" },
         { "name": "ANALYZER_CONTAINER_NAME", "value": "analyzer" },
         { "name": "ANALYZER_SUBNETS", "value": "subnet-0f13d0bc13ba303be,subnet-0bfdf3d44bd5e5cf3,subnet-0771ab1e55bc52f91" },
-        { "name": "ANALYZER_SECURITY_GROUPS", "value": "sg-0b7e1031ed9038bd5" }
+        { "name": "ANALYZER_SECURITY_GROUPS", "value": "sg-0b7e1031ed9038bd5" },
+        { "name": "GITHUB_APP_ID", "value": "5582602" },
+        { "name": "GITHUB_APP_SLUG", "value": "Struct-github-app" },
+        { "name": "GITHUB_CLIENT_ID", "value": "Iv23li7q4N1cSVJfZpk3" }
+      ],
+      "secrets": [
+        { "name": "GITHUB_CLIENT_SECRET", "valueFrom": "arn:aws:secretsmanager:us-east-2:094289742685:secret:struct/github-client-secret-NMcvsv" },
+        { "name": "GITHUB_APP_PRIVATE_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-2:094289742685:secret:struct/github-app-private-key-26eGe8" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
