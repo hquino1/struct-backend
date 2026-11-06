@@ -8,7 +8,7 @@ export class UpdateProjectDto {
   @Matches(/\S/, { message: 'name must not be empty' })
   name?: string;
 
-  // Takes effect on the next analysis; the saved graph stays until then.
+  // Must exist on GitHub. Takes effect on the next analysis; the saved graph stays until then.
   @IsOptional()
   @IsString()
   @MaxLength(255)

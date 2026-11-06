@@ -13,10 +13,11 @@ export class GitHubApiError extends Error {
   }
 }
 
-// Calls the GitHub REST API with an app, installation, or user token.
+// Calls the GitHub REST API with an app, installation, or user token, or anonymously (public
+// data only, and rate-limited per IP) without one.
 export async function githubRequest<T>(
   path: string,
-  token: string,
+  token: string | undefined,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const method = init.method ?? 'GET';
@@ -24,7 +25,7 @@ export async function githubRequest<T>(
     method,
     headers: {
       Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
+      ...(token && { Authorization: `Bearer ${token}` }),
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'Struct',
       ...(init.body !== undefined && { 'Content-Type': 'application/json' }),

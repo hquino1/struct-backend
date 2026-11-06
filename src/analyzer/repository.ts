@@ -48,11 +48,13 @@ export async function cloneRepository(
         },
       },
     );
-  } catch {
+  } catch (err) {
     throw new AnalysisError(
       token
         ? `Couldn't clone branch "${branch}". Check that the branch exists.`
         : `Couldn't clone branch "${branch}". Check that the branch exists, and that the repository is public or the Struct GitHub App is installed on it.`,
+      // git's own message, for the logs; the token travels in the env, so it never appears here.
+      { cause: (err as { stderr?: string }).stderr?.trim() || err },
     );
   }
   const { stdout } = await run('git', ['rev-parse', 'HEAD'], { cwd: dir });

@@ -114,44 +114,61 @@ describe('dependenciesExtractor', () => {
     expect(edge('component:web', 'component:shared')).toMatchObject({
       label: 'imports ×1',
     });
-    expect(node('package:react')).toMatchObject({
-      kind: 'package',
-      group: 'Packages',
-      detail: 'npm · ^19.0.0 · used by 1 component',
-      path: 'frontend/package.json',
-    });
-    expect(edge('component:web', 'package:react')).toMatchObject({
-      label: '×1',
-    });
-    expect(node('package:lodash')).toBeUndefined();
-    expect(node('package:vitest')).toBeUndefined();
+    // Packages only one component uses are listed on its card, not drawn.
+    expect(node('package:react')).toBeUndefined();
+    expect(node('component:web')?.fields).toEqual([
+      { name: 'react', type: '^19.0.0 · ×1' },
+      { name: 'zod', type: '^3.25.0 · ×1' },
+    ]);
 
-    expect(node('package:fastapi')).toMatchObject({
-      detail: 'PyPI · >=0.110 · used by 1 component',
-    });
-    // The import name `yaml` doesn't match the distribution `PyYAML`; it still shows.
-    expect(node('package:yaml')).toMatchObject({
-      detail: 'used by 1 component',
-    });
+    expect(node('component:api')?.fields).toEqual([
+      { name: 'fastapi', type: '>=0.110 · ×1' },
+      // The import name `yaml` doesn't match the distribution `PyYAML`; it still shows.
+      { name: 'yaml', type: '×1' },
+    ]);
 
     // Go imports aren't scanned, so go.mod is the evidence; indirect ones are skipped.
-    expect(
-      edge('component:svc', 'package:github-com/gin-gonic/gin'),
-    ).toMatchObject({ label: 'declared' });
+    expect(node('component:svc')?.fields).toEqual([
+      { name: 'github.com/gin-gonic/gin', type: 'v1.9.1 · declared' },
+    ]);
     expect(nodes.some((n) => n.name === 'golang.org/x/sys')).toBe(false);
   });
 
-  it('folds packages past the per-component limit into one node', async () => {
-    const names = Array.from({ length: 20 }, (_, i) => `pkg-${i}`);
-    await file('app/index.ts', names.map((n) => `import '${n}';`).join('\n'));
+  it('draws only packages that components share', async () => {
+    await file(
+      'package.json',
+      JSON.stringify({ dependencies: { zod: '^3.25.0', react: '^19.0.0' } }),
+    );
+    await file(
+      'web/app.tsx',
+      ["import 'react';", "import 'zod';", "import { z } from 'zod';"].join(
+        '\n',
+      ),
+    );
+    await file('api/main.ts', "import 'zod';");
 
-    const { nodes, edges } = await extract([component('app', ['app'])]);
+    const { nodes, edges } = await extract([
+      component('web', ['web']),
+      component('api', ['api']),
+    ]);
 
-    expect(nodes.filter((n) => n.kind === 'package')).toHaveLength(15);
-    expect(nodes.find((n) => n.kind === 'more')).toMatchObject({
-      id: 'more:app',
-      name: '5 more packages',
-    });
-    expect(edges.filter((e) => e.from === 'component:app')).toHaveLength(16);
+    expect(nodes.filter((n) => n.group === 'Packages')).toEqual([
+      expect.objectContaining({
+        id: 'package:zod',
+        kind: 'package',
+        detail: 'npm · ^3.25.0 · used by 2 components',
+        path: 'package.json',
+      }),
+    ]);
+    expect(edges).toEqual(
+      expect.arrayContaining([
+        { from: 'component:web', to: 'package:zod', label: '×2' },
+        { from: 'component:api', to: 'package:zod', label: '×1' },
+      ]),
+    );
+    expect(nodes.find((n) => n.id === 'component:web')?.fields).toEqual([
+      { name: 'react', type: '^19.0.0 · ×1' },
+    ]);
+    expect(nodes.find((n) => n.id === 'component:api')?.fields).toBeUndefined();
   });
 });

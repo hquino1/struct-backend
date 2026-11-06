@@ -20,3 +20,11 @@ export interface GitHubConnection {
   // Connects the account without changing which repositories the app can read.
   authorizeUrl: string | null;
 }
+
+export interface RepositoryBranches {
+  defaultBranch: string;
+  // In GitHub's order (alphabetical).
+  branches: string[];
+  // The repository may have more branches than Struct lists.
+  truncated: boolean;
+}

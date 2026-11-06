@@ -1,4 +1,8 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import {
   ConditionalCheckFailedException,
@@ -26,7 +30,19 @@ const setup = (
 ) => {
   const db = { send: vi.fn(send) };
   const config = { getOrThrow: () => 'projects' } as unknown as ConfigService;
-  const github = { resolveRepository: vi.fn(resolveRepository) };
+  const github = {
+    resolveRepository: vi.fn(resolveRepository),
+    resolveBranch: vi.fn(
+      async (
+        _userId: string,
+        _owner: string,
+        _repo: string,
+        _installationId?: number,
+        branch?: string,
+      ) => branch || 'main',
+    ),
+    listBranches: vi.fn(),
+  };
   const service = new ProjectsService(
     db as unknown as DynamoDBDocumentClient,
     config,
@@ -46,6 +62,25 @@ describe('ProjectsService.create', () => {
     expect(github.resolveRepository).toHaveBeenCalledWith('u1', 'acme', 'shop');
     expect(project).toMatchObject({ name: 'shop', private: false });
     expect(db.send.mock.calls[0][0].input.Item.installationId).toBeUndefined();
+  });
+
+  it("tracks the branch GitHub resolved, the repository's default when none is given", async () => {
+    const { db, github, service } = setup(() => ({}));
+    github.resolveBranch.mockResolvedValue('master');
+
+    const project = await service.create('u1', {
+      repoUrl: 'https://github.com/acme/shop',
+    });
+
+    expect(github.resolveBranch).toHaveBeenCalledWith(
+      'u1',
+      'acme',
+      'shop',
+      undefined,
+      undefined,
+    );
+    expect(project.branch).toBe('master');
+    expect(db.send.mock.calls[0][0].input.Item.branch).toBe('master');
   });
 
   it('saves the installation that reads a private repository', async () => {
@@ -94,6 +129,40 @@ describe('ProjectsService.update', () => {
     expect(input.ConditionExpression).toBe('attribute_exists(SK)');
   });
 
+  it('checks a new branch on GitHub through the project installation before saving it', async () => {
+    const { db, github, service } = setup((command) =>
+      command.input.UpdateExpression
+        ? { Attributes: { ...item, branch: 'dev' } }
+        : { Item: { ...item, installationId: 42 } },
+    );
+
+    const project = await service.update('u1', projectId, { branch: ' dev ' });
+
+    expect(github.resolveBranch).toHaveBeenCalledWith(
+      'u1',
+      'acme',
+      'struct',
+      42,
+      'dev',
+    );
+    expect(project.branch).toBe('dev');
+    expect(db.send.mock.calls[1][0].input.ExpressionAttributeValues).toEqual({
+      ':branch': 'dev',
+    });
+  });
+
+  it("saves nothing when the repository doesn't have the branch", async () => {
+    const { db, github, service } = setup(() => ({ Item: item }));
+    github.resolveBranch.mockRejectedValue(
+      new BadRequestException('no branch'),
+    );
+
+    await expect(
+      service.update('u1', projectId, { branch: 'typo' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(db.send).toHaveBeenCalledTimes(1);
+  });
+
   it("reports another user's or a missing project as not found", async () => {
     const { service } = setup(() => {
       throw new ConditionalCheckFailedException({
@@ -103,8 +172,39 @@ describe('ProjectsService.update', () => {
     });
 
     await expect(
+      service.update('u1', projectId, { name: 'Renamed' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('reports a missing project as not found before asking GitHub about a branch', async () => {
+    const { github, service } = setup(() => ({}));
+
+    await expect(
       service.update('u1', projectId, { branch: 'dev' }),
     ).rejects.toBeInstanceOf(NotFoundException);
+    expect(github.resolveBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectsService.listBranches', () => {
+  it("lists the project repository's branches through its installation", async () => {
+    const { github, service } = setup(() => ({
+      Item: { ...item, installationId: 42 },
+    }));
+    const branches = {
+      defaultBranch: 'main',
+      branches: ['main'],
+      truncated: false,
+    };
+    github.listBranches.mockResolvedValue(branches);
+
+    await expect(service.listBranches('u1', projectId)).resolves.toBe(branches);
+    expect(github.listBranches).toHaveBeenCalledWith(
+      'u1',
+      'acme',
+      'struct',
+      42,
+    );
   });
 });
 

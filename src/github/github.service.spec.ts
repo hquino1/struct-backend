@@ -157,3 +157,94 @@ describe('GitHubService.assertCanRead', () => {
     ).rejects.toThrow(/no longer has access/);
   });
 });
+
+describe('GitHubService.listBranches', () => {
+  it('lists every page of a public repository anonymously', async () => {
+    const { app, service } = setup();
+    const names = Array.from({ length: 130 }, (_, i) => `b${i}`);
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      const { pathname, searchParams } = new URL(url);
+      expect(new Headers(init.headers).has('Authorization')).toBe(false);
+      if (pathname === '/repos/acme/shop') {
+        return Response.json({ default_branch: 'b7' });
+      }
+      const page = Number(searchParams.get('page'));
+      return Response.json(
+        names.slice((page - 1) * 100, page * 100).map((name) => ({ name })),
+      );
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(service.listBranches('u1', 'acme', 'shop')).resolves.toEqual({
+      defaultBranch: 'b7',
+      branches: names,
+      truncated: false,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(app.repositoryToken).not.toHaveBeenCalled();
+  });
+
+  it('checks access before listing a private repository', async () => {
+    const { service } = setup();
+    stubGitHub({
+      '/repos/acme/secret/collaborators/octo/permission': 404,
+    });
+
+    await expect(
+      service.listBranches('u1', 'acme', 'secret', 42),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('points to the GitHub App when a repository is missing anonymously', async () => {
+    const { service } = setup();
+    stubGitHub({ '/repos/acme/hidden': 404 });
+
+    await expect(service.listBranches('u1', 'acme', 'hidden')).rejects.toThrow(
+      /install the Struct GitHub App/,
+    );
+  });
+
+  it("explains GitHub's rate limit", async () => {
+    const { service } = setup();
+    stubGitHub({ '/repos/acme/shop': 403 });
+
+    await expect(service.listBranches('u1', 'acme', 'shop')).rejects.toThrow(
+      /limiting requests/,
+    );
+  });
+});
+
+describe('GitHubService.resolveBranch', () => {
+  it("falls back to the repository's default branch", async () => {
+    const { service } = setup();
+    stubGitHub({ '/repos/acme/shop': { default_branch: 'master' } });
+
+    await expect(
+      service.resolveBranch('u1', 'acme', 'shop', undefined),
+    ).resolves.toBe('master');
+  });
+
+  it('accepts a branch with a slash in its name', async () => {
+    const { service } = setup();
+    stubGitHub({
+      '/repos/acme/shop': { default_branch: 'main' },
+      '/repos/acme/shop/branches/feature%2Fmap': { name: 'feature/map' },
+    });
+
+    await expect(
+      service.resolveBranch('u1', 'acme', 'shop', undefined, 'feature/map'),
+    ).resolves.toBe('feature/map');
+  });
+
+  it('rejects a branch the repository does not have', async () => {
+    const { service } = setup();
+    stubGitHub({
+      '/repos/acme/shop': { default_branch: 'main' },
+      '/repos/acme/shop/branches/typo': 404,
+    });
+
+    await expect(
+      service.resolveBranch('u1', 'acme', 'shop', undefined, 'typo'),
+    ).rejects.toThrow('acme/shop has no branch named "typo".');
+  });
+});

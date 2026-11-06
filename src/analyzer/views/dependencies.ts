@@ -5,6 +5,7 @@ import type {
   ViewContext,
   ViewEdge,
   ViewExtractor,
+  ViewField,
   ViewGraph,
   ViewNode,
 } from './view-graph.js';
@@ -27,9 +28,9 @@ const DECLARED_ONLY = new Set<Ecosystem>(['Go', 'Cargo']);
 const SCANNED_SOURCE = /\.([cm]?[jt]sx?|py)$/;
 
 const MAX_FILE_BYTES = 512_000;
-// Past these, the rest fold into one "N more" node per component.
-const MAX_PACKAGES_PER_COMPONENT = 15;
-const MAX_PACKAGE_NODES = 120;
+// Only packages shared by components are drawn; the most shared ones past this, and every
+// package a single component uses, are listed on that component's card instead.
+const MAX_PACKAGE_NODES = 40;
 
 export const COMPONENTS_GROUP = 'Components';
 export const PACKAGES_GROUP = 'Packages';
@@ -271,13 +272,13 @@ export const dependenciesExtractor: ViewExtractor = {
       );
     }
 
-    // Packages shared by many components matter most; keep those when trimming.
+    // A package is drawn only when components share it; the most shared ones are kept.
     const users = new Map<
       string,
       { use: Use; components: number; count: number }
     >();
     for (const list of uses.values()) {
-      for (const use of list.slice(0, MAX_PACKAGES_PER_COMPONENT)) {
+      for (const use of list) {
         const entry = users.get(use.key);
         if (entry) {
           entry.components++;
@@ -293,49 +294,46 @@ export const dependenciesExtractor: ViewExtractor = {
     }
     const kept = new Map(
       [...users]
+        .filter(([, u]) => u.components > 1)
         .sort(
           ([, a], [, b]) => b.components - a.components || b.count - a.count,
         )
         .slice(0, MAX_PACKAGE_NODES),
     );
 
-    // Components first, then packages, then the folded remainders, so the layout keeps
-    // each lane in that order.
+    // Components first, then packages, so the layout keeps each lane in that order.
     const componentNodes: ViewNode[] = [];
     const packageNodes: ViewNode[] = [];
-    const moreNodes: ViewNode[] = [];
     const edges: ViewEdge[] = [];
     const componentIds = new Set<string>();
     const componentNode = (id: string) => `component:${id}`;
+    const listed = new Map<string, ViewField[]>();
 
     for (const c of components) {
       const fact = facts.get(c.id);
       const list = uses.get(c.id) ?? [];
-      const shown = list
-        .slice(0, MAX_PACKAGES_PER_COMPONENT)
-        .filter((u) => kept.has(u.key));
-      const hidden = list.filter((u) => !shown.includes(u));
-      for (const use of shown) {
+      for (const use of list.filter((u) => kept.has(u.key))) {
         edges.push({
           from: componentNode(c.id),
           to: `package:${use.key}`,
           label: use.count ? `×${use.count}` : 'declared',
         });
       }
-      if (hidden.length) {
-        moreNodes.push({
-          id: `more:${c.id}`,
-          name: `${hidden.length} more packages`,
-          kind: 'more',
-          detail: hidden.map((u) => u.name).join(', '),
-          group: PACKAGES_GROUP,
-        });
-        edges.push({
-          from: componentNode(c.id),
-          to: `more:${c.id}`,
-          label: '',
-        });
-      }
+      listed.set(
+        c.id,
+        list
+          .filter((u) => !kept.has(u.key))
+          .map((u) => ({
+            name: u.name,
+            type: [
+              u.declared?.version,
+              u.declared?.dev && 'dev',
+              u.count ? `×${u.count}` : 'declared',
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          })),
+      );
       for (const [target, { count }] of fact?.dependsOn ?? []) {
         edges.push({
           from: componentNode(c.id),
@@ -352,6 +350,7 @@ export const dependenciesExtractor: ViewExtractor = {
       const internal = facts.get(c.id)?.dependsOn.size ?? 0;
       const unused = notImported.get(c.id) ?? 0;
       const manifest = manifestOf.get(c.id);
+      const fields = listed.get(c.id) ?? [];
       componentNodes.push({
         id: componentNode(c.id),
         name: c.name,
@@ -367,6 +366,7 @@ export const dependenciesExtractor: ViewExtractor = {
         group: COMPONENTS_GROUP,
         componentId: c.id,
         ...(manifest && { path: manifest }),
+        ...(fields.length && { fields }),
       });
     }
 
@@ -376,11 +376,7 @@ export const dependenciesExtractor: ViewExtractor = {
         id: `package:${key}`,
         name: use.name,
         kind: d?.dev ? 'dev' : 'package',
-        detail: [
-          d?.ecosystem,
-          d?.version,
-          `used by ${count} ${count === 1 ? 'component' : 'components'}`,
-        ]
+        detail: [d?.ecosystem, d?.version, `used by ${count} components`]
           .filter(Boolean)
           .join(' · '),
         group: PACKAGES_GROUP,
@@ -388,7 +384,7 @@ export const dependenciesExtractor: ViewExtractor = {
       });
     }
 
-    const nodes = [...componentNodes, ...packageNodes, ...moreNodes];
+    const nodes = [...componentNodes, ...packageNodes];
     const ids = new Set(nodes.map((n) => n.id));
     return {
       nodes,

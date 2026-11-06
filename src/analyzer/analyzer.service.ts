@@ -134,8 +134,12 @@ export class AnalyzerService {
         );
         return true;
       }
+      const cause = (err as Error).cause;
       this.logger.error(
-        `Analysis ${job.analysisId} failed: ${(err as Error).stack ?? String(err)}`,
+        `Analysis ${job.analysisId} failed: ${(err as Error).stack ?? String(err)}` +
+          (cause === undefined
+            ? ''
+            : `\nCaused by: ${(cause as Error).stack ?? String(cause)}`),
       );
       await this.update(job, {
         status: 'FAILED',

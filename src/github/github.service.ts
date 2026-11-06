@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -15,6 +16,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
+import { GITHUB_REPO_URL } from '../projects/dto/create-project.dto.js';
 import { userKey } from '../projects/project.entity.js';
 import {
   GitHubApiError,
@@ -25,10 +27,14 @@ import {
   GITHUB_CONNECTION_KEY,
   type GitHubConnection,
   type GitHubConnectionItem,
+  type RepositoryBranches,
 } from './github.entity.js';
 
 // Long enough to pick repositories on GitHub's install page.
 const STATE_TTL_MS = 60 * 60 * 1000;
+// GitHub's largest page; listing stops after MAX_BRANCH_PAGES of them.
+const BRANCHES_PER_PAGE = 100;
+const MAX_BRANCH_PAGES = 10;
 
 // API side: links a user to their GitHub account and decides whether they may analyze a
 // private repository.
@@ -158,6 +164,90 @@ export class GitHubService {
     repo: string,
     installationId: number,
   ): Promise<void> {
+    await this.readToken(userId, owner, repo, installationId);
+  }
+
+  // The branches of a repository that isn't a project yet, with the same access check an
+  // import makes.
+  async listRepositoryBranches(
+    userId: string,
+    repoUrl: string,
+  ): Promise<RepositoryBranches> {
+    // The DTO already validated the URL, so the match always succeeds.
+    const [, owner, repo] = GITHUB_REPO_URL.exec(repoUrl)!;
+    const installationId = await this.resolveRepository(userId, owner, repo);
+    return this.listBranches(userId, owner, repo, installationId);
+  }
+
+  // The branches of a repository, read the way an analysis will read it: through
+  // `installationId` when it's private, anonymously otherwise.
+  async listBranches(
+    userId: string,
+    owner: string,
+    repo: string,
+    installationId?: number,
+  ): Promise<RepositoryBranches> {
+    const token = await this.readToken(userId, owner, repo, installationId);
+    return this.readRepository(owner, repo, token, async () => {
+      const { default_branch } = await githubRequest<{
+        default_branch: string;
+      }>(`/repos/${owner}/${repo}`, token);
+      const branches: string[] = [];
+      for (let page = 1; page <= MAX_BRANCH_PAGES; page++) {
+        const batch = await githubRequest<{ name: string }[]>(
+          `/repos/${owner}/${repo}/branches?per_page=${BRANCHES_PER_PAGE}&page=${page}`,
+          token,
+        );
+        branches.push(...batch.map((b) => b.name));
+        if (batch.length < BRANCHES_PER_PAGE) {
+          return { defaultBranch: default_branch, branches, truncated: false };
+        }
+      }
+      return { defaultBranch: default_branch, branches, truncated: true };
+    });
+  }
+
+  // The branch a project will track: `branch` once GitHub confirms it exists, or the
+  // repository's default branch when none is given.
+  async resolveBranch(
+    userId: string,
+    owner: string,
+    repo: string,
+    installationId: number | undefined,
+    branch?: string,
+  ): Promise<string> {
+    const token = await this.readToken(userId, owner, repo, installationId);
+    return this.readRepository(owner, repo, token, async () => {
+      const { default_branch } = await githubRequest<{
+        default_branch: string;
+      }>(`/repos/${owner}/${repo}`, token);
+      if (!branch || branch === default_branch) return default_branch;
+      try {
+        await githubRequest(
+          `/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+          token,
+        );
+      } catch (err) {
+        if (err instanceof GitHubApiError && err.status === 404) {
+          throw new BadRequestException(
+            `${owner}/${repo} has no branch named "${branch}".`,
+          );
+        }
+        throw err;
+      }
+      return branch;
+    });
+  }
+
+  // The installation token that reads a private repository, once the user's access is
+  // confirmed; undefined for a public one, which is read anonymously.
+  private async readToken(
+    userId: string,
+    owner: string,
+    repo: string,
+    installationId?: number,
+  ): Promise<string | undefined> {
+    if (installationId === undefined) return undefined;
     let token: string;
     try {
       token = await this.app.repositoryToken(installationId, repo, {
@@ -175,6 +265,36 @@ export class GitHubService {
       await this.assertAccess(userId, owner, repo, token);
     } catch (err) {
       if (err instanceof ForbiddenException) throw err;
+      throw this.unavailable(err);
+    }
+    return token;
+  }
+
+  // Runs GitHub reads of owner/repo, turning GitHub's errors into ones the user can act on.
+  private async readRepository<T>(
+    owner: string,
+    repo: string,
+    token: string | undefined,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await read();
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      if (err instanceof GitHubApiError && err.status === 404) {
+        // Anonymously, GitHub can't tell a private repository from a missing one.
+        throw new BadRequestException(
+          token
+            ? `Couldn't find ${owner}/${repo} on GitHub.`
+            : `Couldn't find ${owner}/${repo} on GitHub. If it's private, install the Struct GitHub App on it.`,
+        );
+      }
+      if (err instanceof GitHubApiError && [403, 429].includes(err.status)) {
+        this.logger.warn(`GitHub refused ${owner}/${repo}: ${err.message}`);
+        throw new ServiceUnavailableException(
+          'GitHub is limiting requests from Struct right now. Try again in a few minutes.',
+        );
+      }
       throw this.unavailable(err);
     }
   }

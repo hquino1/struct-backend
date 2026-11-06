@@ -39,6 +39,15 @@ export class ProjectsController {
     return this.projectsService.findOne(user.sub, projectId);
   }
 
+  // The repository's branches, for picking which one the project tracks.
+  @Get(':projectId/branches')
+  listBranches(
+    @CurrentUser() user: AuthUser,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.projectsService.listBranches(user.sub, projectId);
+  }
+
   // Renames the project or changes the branch the next analysis reads.
   @Patch(':projectId')
   update(

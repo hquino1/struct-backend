@@ -17,7 +17,7 @@ export class CreateProjectDto {
   @MaxLength(100)
   name?: string;
 
-  // Defaults to `main` when omitted.
+  // Defaults to the repository's default branch when omitted; must exist on GitHub.
   @IsOptional()
   @IsString()
   @MaxLength(255)

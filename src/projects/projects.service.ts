@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { graphKey, NOT_STARTED, viewKey } from '../analyses/analysis.entity.js';
 import { VIEW_IDS } from '../analyzer/views/view-graph.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
+import type { RepositoryBranches } from '../github/github.entity.js';
 import { GitHubService } from '../github/github.service.js';
 import { CreateProjectDto, GITHUB_REPO_URL } from './dto/create-project.dto.js';
 import { UpdateProjectDto } from './dto/update-project.dto.js';
@@ -48,12 +49,20 @@ export class ProjectsService {
       repoOwner,
       repoName,
     );
+    // Throws if the repository has no such branch.
+    const branch = await this.github.resolveBranch(
+      userId,
+      repoOwner,
+      repoName,
+      installationId,
+      dto.branch?.trim(),
+    );
     const item: ProjectItem = {
       PK: userKey(userId),
       SK: projectKey(randomUUID()),
       name: dto.name?.trim() || repoName,
       repoUrl: `https://github.com/${repoOwner}/${repoName}`,
-      branch: dto.branch?.trim() || 'main',
+      branch,
       createdAT: new Date().toISOString(),
       installationId,
       // Status and step are filled in once the first analysis starts.
@@ -96,14 +105,17 @@ export class ProjectsService {
   }
 
   async findOne(userId: string, projectId: string): Promise<Project> {
-    const { Item } = await this.db.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: { PK: userKey(userId), SK: projectKey(projectId) },
-      }),
-    );
-    if (!Item) throw new NotFoundException('Project not found');
-    return toProject(Item as ProjectItem);
+    return toProject(await this.findItem(userId, projectId));
+  }
+
+  // The branches the project could track, for the branch picker.
+  async listBranches(
+    userId: string,
+    projectId: string,
+  ): Promise<RepositoryBranches> {
+    const { repoUrl, installationId } = await this.findItem(userId, projectId);
+    const [, owner, repo] = GITHUB_REPO_URL.exec(repoUrl)!;
+    return this.github.listBranches(userId, owner, repo, installationId);
   }
 
   async update(
@@ -111,9 +123,25 @@ export class ProjectsService {
     projectId: string,
     dto: UpdateProjectDto,
   ): Promise<Project> {
+    let branch: string | undefined;
+    if (dto.branch !== undefined) {
+      // Throws if the repository has no such branch, so a typo fails here, not at the clone.
+      const { repoUrl, installationId } = await this.findItem(
+        userId,
+        projectId,
+      );
+      const [, owner, repo] = GITHUB_REPO_URL.exec(repoUrl)!;
+      branch = await this.github.resolveBranch(
+        userId,
+        owner,
+        repo,
+        installationId,
+        dto.branch.trim(),
+      );
+    }
     const fields = {
       ...(dto.name !== undefined && { name: dto.name.trim() }),
-      ...(dto.branch !== undefined && { branch: dto.branch.trim() }),
+      ...(branch !== undefined && { branch }),
     };
     const keys = Object.keys(fields);
     if (keys.length === 0) return this.findOne(userId, projectId);
@@ -142,6 +170,20 @@ export class ProjectsService {
       }
       throw err;
     }
+  }
+
+  private async findItem(
+    userId: string,
+    projectId: string,
+  ): Promise<ProjectItem> {
+    const { Item } = await this.db.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { PK: userKey(userId), SK: projectKey(projectId) },
+      }),
+    );
+    if (!Item) throw new NotFoundException('Project not found');
+    return Item as ProjectItem;
   }
 
   // Removes the project with its saved graph and views in one transaction. A run still in
