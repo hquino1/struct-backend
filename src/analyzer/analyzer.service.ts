@@ -29,12 +29,14 @@ import { projectKey, userKey } from '../projects/project.entity.js';
 import {
   ComponentsResult,
   ConnectionsResult,
-  InsightsResult,
+  FaqResult,
   type ArchitectureGraph,
   type Component,
+  type Connection,
+  type FaqEntry,
 } from './architecture.js';
 import { LlmService } from './llm.service.js';
-import { INSIGHTS_SYSTEM, MAP_SYSTEM, TRACE_SYSTEM } from './prompts.js';
+import { FAQ_SYSTEM, MAP_SYSTEM, TRACE_SYSTEM } from './prompts.js';
 import { buildMapDigest, buildTraceDigest, scanCode } from './repo-digest.js';
 import {
   AnalysisError,
@@ -50,6 +52,11 @@ const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 // Keeps the graph comfortably under DynamoDB's 400 KB item limit.
 const MAX_GRAPH_BYTES = 350_000;
+
+// How much of each explore view the FAQ step sees, to bound its prompt on large repos.
+const MAX_FAQ_NODES = 60;
+const MAX_FAQ_FIELDS = 12;
+const MAX_FAQ_PATHS = 4;
 
 interface BuiltViews {
   status: AnalysisViews;
@@ -110,8 +117,9 @@ export class AnalyzerService {
         this.buildViews({ repoDir, paths, components, facts, llm: this.llm }),
       ]);
 
+      // The step keeps its old id so runs in progress during a deploy still report it.
       await this.setStep(job, 'insights');
-      const insights = await this.generateInsights(components, connections);
+      const faq = await this.answerFaq(components, connections, views, paths);
 
       await this.complete(
         job,
@@ -121,7 +129,7 @@ export class AnalyzerService {
             files: fileCounts[c.id] ?? 0,
           })),
           connections,
-          insights,
+          faq,
         },
         views,
       );
@@ -251,35 +259,78 @@ export class AnalyzerService {
     });
   }
 
-  private async generateInsights(
+  // Answers the questions a newcomer asks first, from the map and the explore views.
+  private async answerFaq(
     components: Component[],
-    connections: ArchitectureGraph['connections'],
-  ) {
-    const graph = {
-      components: components.map(({ id, name, type, tech, description }) => ({
-        id,
-        name,
-        type,
-        tech,
-        description,
-      })),
+    connections: Connection[],
+    views: BuiltViews,
+    paths: string[],
+  ): Promise<FaqEntry[]> {
+    const summarize = (view: ViewId) =>
+      views.graphs[view]?.nodes.slice(0, MAX_FAQ_NODES).map((n) => ({
+        name: n.name,
+        kind: n.kind,
+        group: n.group,
+        ...(n.detail && { detail: n.detail }),
+        ...(n.path && { path: n.path }),
+        ...(n.componentId && { componentId: n.componentId }),
+        ...(n.fields && {
+          fields: n.fields.slice(0, MAX_FAQ_FIELDS).map((f) => f.name),
+        }),
+      }));
+    const input = {
+      components: components.map(
+        ({ id, name, type, tech, description, paths, entryPoint }) => ({
+          id,
+          name,
+          type,
+          tech,
+          description,
+          paths,
+          entryPoint,
+        }),
+      ),
       connections,
+      endpoints: summarize('api'),
+      dataModel: summarize('schema'),
+      infrastructure: summarize('infrastructure'),
+      ciCd: summarize('ci-cd'),
+      screens: summarize('screens'),
     };
-    const { insights } = await this.llm.callTool({
-      system: INSIGHTS_SYSTEM,
-      prompt: JSON.stringify(graph, null, 2),
+    const { faq } = await this.llm.callTool({
+      system: FAQ_SYSTEM,
+      prompt: JSON.stringify(input, null, 2),
       tool: {
-        name: 'record_insights',
-        description: 'Record insights about the architecture.',
-        schema: InsightsResult,
+        name: 'record_faq',
+        description: 'Record the answers to the FAQ about this repository.',
+        schema: FaqResult,
       },
       effort: 'medium',
     });
+
+    // Keep only references that exist, so every link on the page opens something.
     const ids = new Set(components.map((c) => c.id));
-    return insights.map((insight) => ({
-      ...insight,
-      componentIds: insight.componentIds.filter((id) => ids.has(id)),
-    }));
+    const files = new Set(paths);
+    const dirs = new Set(
+      paths.flatMap((p) => {
+        const parts = p.split('/');
+        return parts.slice(1).map((_, i) => parts.slice(0, i + 1).join('/'));
+      }),
+    );
+    const reference = (raw: string) => {
+      const path = raw
+        .trim()
+        .replace(/^\.?\//, '')
+        .replace(/\/+$/, '');
+      return files.has(path) ? [path] : dirs.has(path) ? [`${path}/`] : [];
+    };
+    return faq
+      .filter((e) => e.question.trim() && e.answer.trim())
+      .map((e) => ({
+        ...e,
+        componentIds: [...new Set(e.componentIds)].filter((id) => ids.has(id)),
+        paths: [...new Set(e.paths.flatMap(reference))].slice(0, MAX_FAQ_PATHS),
+      }));
   }
 
   // Saves the graph and marks the run complete in one transaction, so a run that a newer

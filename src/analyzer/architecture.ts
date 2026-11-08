@@ -73,39 +73,65 @@ export type Connection = z.infer<
   typeof ConnectionsResult
 >['connections'][number];
 
-export const INSIGHT_KINDS = [
-  'Architecture',
-  'Attention',
-  'Best practice',
+export const FAQ_TOPICS = [
+  'overview',
+  'connections',
+  'endpoints',
+  'data',
+  'deployment',
+  'risks',
+  'onboarding',
+  'other',
 ] as const;
 
-export const InsightsResult = z.object({
-  insights: z
+export const FaqResult = z.object({
+  faq: z
     .array(
       z.object({
-        title: z.string().describe('Short headline, under 8 words.'),
-        text: z
+        question: z
+          .string()
+          .describe('The question, as worded in the instructions.'),
+        answer: z
           .string()
           .describe(
-            'One or two sentences naming the specific components involved.',
+            'Plain text: 2 to 5 sentences, or one intro line followed by lines starting with "- ".',
           ),
-        kind: z
-          .enum(INSIGHT_KINDS)
+        topic: z
+          .enum(FAQ_TOPICS)
           .describe(
-            'Architecture = notable structure; Attention = a risk or problem worth fixing; Best practice = something done well.',
+            'Which listed question this answers; "other" for repository-specific questions.',
           ),
         componentIds: z
           .array(z.string())
-          .describe('ids of the components the insight is about.'),
+          .describe(
+            'ids of the components the answer is about, most relevant first.',
+          ),
+        paths: z
+          .array(z.string())
+          .describe(
+            'Up to 4 repository files or directories the answer points to, relative to the repo root. Only paths that appear in the input.',
+          ),
       }),
     )
-    .describe('Between 3 and 5 insights, most important first.'),
+    .describe(
+      'Between 5 and 9 entries, in the order given in the instructions.',
+    ),
 });
-export type Insight = z.infer<typeof InsightsResult>['insights'][number];
+export type FaqEntry = z.infer<typeof FaqResult>['faq'][number];
+
+// Saved by runs before the FAQ replaced them; the API still returns them for those graphs.
+export interface Insight {
+  title: string;
+  text: string;
+  kind: 'Architecture' | 'Attention' | 'Best practice';
+  componentIds: string[];
+}
 
 // The stored result, shaped for the frontend's graph view.
 export interface ArchitectureGraph {
   components: (Component & { files: number })[];
   connections: Connection[];
-  insights: Insight[];
+  // Directory paths end in "/", so links can tell them from files. Missing on older runs.
+  faq?: FaqEntry[];
+  insights?: Insight[];
 }

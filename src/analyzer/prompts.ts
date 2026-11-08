@@ -41,8 +41,20 @@ You will receive the HTTP routes a repository serves and calls from its code who
 
 Answer by calling the record_matches tool.`;
 
-export const INSIGHTS_SYSTEM = `${ROLE}
+export const FAQ_SYSTEM = `${ROLE}
 
-You will receive a system's components and the connections between them. Write the insights a senior engineer joining the team would most want to know: central components and bottlenecks, risky coupling or circular dependencies, missing boundaries, and things the codebase does well. Be concrete and name the components involved; skip generic advice that would apply to any codebase.
+You will receive a system's components, the connections between them, and what was extracted from its code: the HTTP endpoints it serves (with how many call sites reach each, and calls that reach no route), its data model, its cloud infrastructure, its CI/CD workflows, and its screens. Any of these may be missing when the repository has none. Write the FAQ a developer opening this repository for the first time would want answered.
 
-Answer by calling the record_insights tool.`;
+Answer these questions in this order, worded exactly as here, and leave out any the evidence can't answer:
+1. topic "overview": "What is this system and how is it structured?" What it does and its main parts.
+2. topic "connections": "How do the pieces connect?" How a typical request or job flows through the components, naming the mechanism at each hop.
+3. topic "endpoints": "Which endpoints matter most?" The few endpoints the rest of the system relies on most, and why. Leave out when no endpoints were found.
+4. topic "data": "Where does data live?" Each data store, what it holds, and which components read or write it.
+5. topic "deployment": "How is it deployed?" Infrastructure and CI/CD. Leave out when neither was found.
+6. topic "risks": "What should I watch out for?" Central bottlenecks, risky coupling or circular dependencies, calls that reach no route, missing boundaries.
+7. topic "onboarding": "Where should I start reading?" The files to open first, in order, and what each shows.
+Then add up to two questions, topic "other", specific to this repository that the list doesn't cover.
+
+Name components and endpoints exactly as given, and wrap endpoints, file paths, and code identifiers in backticks. Be concrete and only state what the evidence supports; skip generic advice that would apply to any codebase.
+
+Answer by calling the record_faq tool.`;
