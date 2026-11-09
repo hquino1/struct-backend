@@ -4,6 +4,7 @@ import {
   type AnalysisStep,
   type ProjectAnalysis,
 } from '../analyses/analysis.entity.js';
+import type { ProjectDocs } from '../docs/docs.entity.js';
 
 // Single-table item: PK = USER#<cognito sub>, SK = PROJECT#<projectId>.
 export interface ProjectItem {
@@ -17,6 +18,8 @@ export interface ProjectItem {
   installationId?: number;
   // Latest analysis run; missing on projects created before analysis existed.
   analysis?: ProjectAnalysis;
+  // Which files to document, and the latest docs run; missing until the first one.
+  docs?: ProjectDocs;
 }
 
 export interface Project {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KEY_PART_KINDS } from '../docs/docs.entity.js';
 
 // What Claude returns at each step. Each schema doubles as a tool's input_schema, so the
 // `.describe()` text is what Claude reads about each field.
@@ -135,3 +136,38 @@ export interface ArchitectureGraph {
   faq?: FaqEntry[];
   insights?: Insight[];
 }
+
+export const DocResult = z.object({
+  summary: z
+    .string()
+    .describe('One sentence, under 25 words: what this file is for.'),
+  purpose: z
+    .string()
+    .describe(
+      "2 to 4 sentences on the file's role in the system: what calls it, what it relies on, and why it exists.",
+    ),
+  keyParts: z
+    .array(
+      z.object({
+        name: z.string().describe('The identifier, e.g. "AnalysesService".'),
+        kind: z.enum(KEY_PART_KINDS),
+        description: z
+          .string()
+          .describe(
+            'One or two sentences on what it does and when it is used.',
+          ),
+        line: z
+          .number()
+          .int()
+          .describe(
+            'The line number where it is defined, from the numbered input.',
+          ),
+      }),
+    )
+    .describe('Up to 10 of the most important definitions, in file order.'),
+  notes: z
+    .array(z.string())
+    .describe(
+      'Up to 4 things to know before changing this file. Empty when nothing stands out.',
+    ),
+});

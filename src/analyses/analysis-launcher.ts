@@ -13,6 +13,11 @@ export interface AnalysisJob {
   // Present for private repositories; the worker exchanges it for a token itself, so no
   // credential passes through ECS task overrides.
   installationId?: number;
+  // A docs run writes the docs again for a saved analysis instead of running a new one.
+  kind?: 'analysis' | 'docs';
+  docsRunId?: string;
+  // The analyzed commit a docs run documents.
+  commit?: string;
 }
 
 // The worker reads its job from these variables (see worker.ts).
@@ -24,6 +29,11 @@ export const jobEnvironment = (job: AnalysisJob): Record<string, string> => ({
   BRANCH: job.branch,
   ...(job.installationId !== undefined && {
     INSTALLATION_ID: String(job.installationId),
+  }),
+  ...(job.kind === 'docs' && {
+    JOB_KIND: 'docs',
+    DOCS_RUN_ID: job.docsRunId!,
+    COMMIT: job.commit!,
   }),
 });
 
@@ -87,7 +97,7 @@ export class AnalysisLauncher {
           ],
         },
         // Lets a task be traced back to its analysis in the ECS console.
-        startedBy: job.analysisId.slice(0, 36),
+        startedBy: (job.docsRunId ?? job.analysisId).slice(0, 36),
       }),
     );
 

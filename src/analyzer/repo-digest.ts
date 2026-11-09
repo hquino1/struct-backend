@@ -230,6 +230,8 @@ export async function scanCode(
   dir: string,
   paths: string[],
   components: Component[],
+  // Called for every import between two repository files, e.g. to count a file's importers.
+  onImport?: (from: string, to: string) => void,
 ): Promise<CodeFacts> {
   const locate = componentLocator(components);
   const files = new Set(paths);
@@ -278,6 +280,7 @@ export async function scanCode(
         const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
         const target = resolveJsImport(path, spec, files);
         if (target) {
+          onImport?.(path, target);
           const targetOwner = locate(target);
           if (targetOwner && targetOwner !== owner) {
             const edge = fact.dependsOn.get(targetOwner);

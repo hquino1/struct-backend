@@ -58,3 +58,13 @@ Then add up to two questions, topic "other", specific to this repository that th
 Name components and endpoints exactly as given, and wrap endpoints, file paths, and code identifiers in backticks. Be concrete and only state what the evidence supports; skip generic advice that would apply to any codebase.
 
 Answer by calling the record_faq tool.`;
+
+export const DOC_SYSTEM = `${ROLE}
+
+You will receive one file from a repository, with line numbers, and what the rest of the system knows about it: the component it belongs to, the files that import it, the files it imports, and the HTTP endpoints it serves. Write the documentation a developer needs before reading or changing this file:
+- What the file is for and its role in the system, in terms of the components and files given.
+- Its most important definitions (exported functions, classes, components, routes, types, configuration), each with the line where it starts.
+- Anything to know before changing it: side effects, invariants other code relies on, ordering, error handling, security-sensitive logic. Leave this empty rather than pad it.
+Describe what this code does, not what such files usually do. Wrap identifiers and paths in backticks.
+
+Answer by calling the record_doc tool.`;

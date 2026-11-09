@@ -6,9 +6,11 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,10 +24,26 @@ import {
   type ProjectAnalysis,
   type ViewItem,
 } from '../analyses/analysis.entity.js';
+import {
+  DEFAULT_DOCS,
+  filesKey,
+  isDocumentable,
+  packPaths,
+  unpackPaths,
+  type DocSuggestion,
+  type FilesItem,
+  type ProjectDocs,
+} from '../docs/docs.entity.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
 import { GitHubAppService } from '../github/github-app.service.js';
 import { GITHUB_REPO_URL } from '../projects/dto/create-project.dto.js';
-import { projectKey, userKey } from '../projects/project.entity.js';
+import {
+  projectKey,
+  userKey,
+  type ProjectItem,
+} from '../projects/project.entity.js';
+import { DocsSupersededError, DocsWriter } from './docs/docs-writer.service.js';
+import { ImportGraph, suggestFiles } from './docs/suggest.js';
 import {
   ComponentsResult,
   ConnectionsResult,
@@ -40,6 +58,7 @@ import { FAQ_SYSTEM, MAP_SYSTEM, TRACE_SYSTEM } from './prompts.js';
 import { buildMapDigest, buildTraceDigest, scanCode } from './repo-digest.js';
 import {
   AnalysisError,
+  cloneCommit,
   cloneRepository,
   listRepositoryFiles,
   scanRepository,
@@ -63,6 +82,17 @@ interface BuiltViews {
   graphs: Partial<Record<ViewId, ViewGraph>>;
 }
 
+// What a finished analysis hands to the docs run that follows it.
+interface Analyzed {
+  repoDir: string;
+  commit: string;
+  components: Component[];
+  api?: ViewGraph;
+  imports: ImportGraph;
+  documentable: string[];
+  suggestions: DocSuggestion[];
+}
+
 // Thrown when a newer run has replaced this one; the old worker just stops.
 class SupersededError extends Error {}
 
@@ -75,13 +105,15 @@ export class AnalyzerService {
     @Inject(DYNAMODB_CLIENT) private readonly db: DynamoDBDocumentClient,
     private readonly llm: LlmService,
     private readonly github: GitHubAppService,
+    private readonly docsWriter: DocsWriter,
     config: ConfigService,
   ) {
     this.tableName = config.getOrThrow<string>('DYNAMODB_PROJECTS_TABLE');
   }
 
-  // Runs the whole pipeline, recording progress on the analysis item as it goes.
-  // Resolves false if the run failed.
+  // Runs the whole pipeline, recording progress on the analysis item as it goes, then
+  // writes the docs for the project's selected files. Resolves false if the analysis failed;
+  // a docs failure is reported on the project's docs instead.
   async run(job: AnalysisJob): Promise<boolean> {
     const workDir = await mkdtemp(join(tmpdir(), 'struct-analysis-'));
     const heartbeat = setInterval(() => {
@@ -90,6 +122,194 @@ export class AnalyzerService {
       );
     }, HEARTBEAT_INTERVAL_MS);
 
+    try {
+      const analyzed = await this.analyze(job, workDir).finally(() =>
+        clearInterval(heartbeat),
+      );
+      if (!analyzed) return false;
+      if (analyzed !== 'superseded') {
+        await this.documentAfterAnalysis(job, analyzed);
+      }
+      return true;
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  // Writes the docs again after the user changed which files to document. The analysis it
+  // documents is already saved; this reads its commit, graph, and file list.
+  async runDocs(job: AnalysisJob): Promise<boolean> {
+    const run = {
+      userId: job.userId,
+      projectId: job.projectId,
+      runId: job.docsRunId!,
+    };
+    const workDir = await mkdtemp(join(tmpdir(), 'struct-docs-'));
+    try {
+      const pk = userKey(job.userId);
+      const get = async <T>(SK: string) =>
+        (
+          await this.db.send(
+            new GetCommand({ TableName: this.tableName, Key: { PK: pk, SK } }),
+          )
+        ).Item as T | undefined;
+      const [project, graphItem, filesItem, apiItem] = await Promise.all([
+        get<ProjectItem>(projectKey(job.projectId)),
+        get<GraphItem>(graphKey(job.projectId)),
+        get<FilesItem>(filesKey(job.projectId)),
+        get<ViewItem>(viewKey(job.projectId, 'api')),
+      ]);
+      const docs = project?.docs;
+      if (docs?.runId !== run.runId) throw new DocsSupersededError();
+      if (!graphItem || !filesItem) {
+        throw new AnalysisError(
+          'This project has no completed analysis to document. Re-analyze it first.',
+        );
+      }
+      const paths = unpackPaths(filesItem.paths);
+      const repoDir = join(workDir, 'repo');
+      await cloneCommit(
+        job.repoUrl,
+        job.commit!,
+        repoDir,
+        await this.cloneToken(job),
+      );
+      const components = graphItem.graph.components;
+      const imports = new ImportGraph();
+      await scanCode(repoDir, paths, components, (from, to) =>
+        imports.add(from, to),
+      );
+      await this.docsWriter.write({
+        ...run,
+        commit: job.commit!,
+        repoDir,
+        selection: this.docsSelection(docs, paths, filesItem.suggestions),
+        components,
+        api: apiItem?.graph,
+        imports,
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof DocsSupersededError) {
+        this.logger.warn(`Docs run ${run.runId} was replaced by a newer run`);
+        return true;
+      }
+      this.logger.error(
+        `Docs run ${run.runId} failed: ${(err as Error).stack ?? String(err)}`,
+      );
+      await this.docsWriter.fail(run, err);
+      return false;
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  // The files a docs run covers: the suggestions, or the user's pick minus files that no
+  // longer exist.
+  private docsSelection(
+    docs: ProjectDocs,
+    paths: string[],
+    suggestions: DocSuggestion[],
+  ) {
+    if (docs.mode === 'auto') return suggestions.map((s) => s.path);
+    const available = new Set(paths);
+    return (docs.selection ?? []).filter((p) => available.has(p));
+  }
+
+  // Starts a docs run for the commit this analysis read, replacing any older docs run.
+  private async documentAfterAnalysis(job: AnalysisJob, analyzed: Analyzed) {
+    const pk = userKey(job.userId);
+    const { Item } = await this.db.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { PK: pk, SK: projectKey(job.projectId) },
+        ProjectionExpression: '#docs',
+        ExpressionAttributeNames: { '#docs': 'docs' },
+      }),
+    );
+    const previous = (Item as ProjectItem | undefined)?.docs ?? DEFAULT_DOCS;
+    const selection = this.docsSelection(
+      previous,
+      analyzed.documentable,
+      analyzed.suggestions,
+    );
+    const runId = randomUUID();
+    const now = new Date().toISOString();
+    const docs: ProjectDocs = {
+      mode: previous.mode,
+      ...(previous.selection && { selection: previous.selection }),
+      status: 'QUEUED',
+      runId,
+      startedAt: now,
+      heartbeatAt: now,
+      commit: analyzed.commit,
+      total: selection.length,
+      done: 0,
+      failed: [],
+    };
+    try {
+      await this.db.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { PK: pk, SK: projectKey(job.projectId) },
+          UpdateExpression: 'SET #docs = :docs',
+          // Skipped when a newer analysis replaced this one, or when the user started a docs
+          // run since the read above (that run already documents this commit).
+          ConditionExpression: `#analysis.analysisId = :analysisId AND ${
+            previous.runId
+              ? '#docs.runId = :previousRunId'
+              : 'attribute_not_exists(#docs.runId)'
+          }`,
+          ExpressionAttributeNames: {
+            '#analysis': 'analysis',
+            '#docs': 'docs',
+          },
+          ExpressionAttributeValues: {
+            ':docs': docs,
+            ':analysisId': job.analysisId,
+            ...(previous.runId && { ':previousRunId': previous.runId }),
+          },
+        }),
+      );
+    } catch (err) {
+      if (err instanceof ConditionalCheckFailedException) {
+        this.logger.warn(`Analysis ${job.analysisId}: docs run skipped`);
+        return;
+      }
+      throw err;
+    }
+
+    const run = {
+      userId: job.userId,
+      projectId: job.projectId,
+      runId,
+      commit: analyzed.commit,
+      repoDir: analyzed.repoDir,
+      selection,
+      components: analyzed.components,
+      api: analyzed.api,
+      imports: analyzed.imports,
+    };
+    try {
+      await this.docsWriter.write(run);
+    } catch (err) {
+      if (err instanceof DocsSupersededError) {
+        this.logger.warn(`Docs run ${runId} was replaced by a newer run`);
+        return;
+      }
+      this.logger.error(
+        `Docs run ${runId} failed: ${(err as Error).stack ?? String(err)}`,
+      );
+      await this.docsWriter.fail(run, err);
+    }
+  }
+
+  // The analysis itself: everything up to the saved graph. Resolves what the docs run
+  // needs, false if it failed, or 'superseded' if a newer run replaced it.
+  private async analyze(
+    job: AnalysisJob,
+    workDir: string,
+  ): Promise<Analyzed | false | 'superseded'> {
     try {
       const repoDir = join(workDir, 'repo');
       await this.setStep(job, 'clone');
@@ -110,7 +330,10 @@ export class AnalyzerService {
       await this.setStep(job, 'trace');
       // One read of the code serves both the trace and the explore views. The views need no
       // model call, so they finish while the trace waits on the model.
-      const facts = await scanCode(repoDir, paths, components);
+      const imports = new ImportGraph();
+      const facts = await scanCode(repoDir, paths, components, (from, to) =>
+        imports.add(from, to),
+      );
       const { digest, fileCounts } = buildTraceDigest(components, facts);
       const [connections, views] = await Promise.all([
         this.traceConnections(components, digest),
@@ -120,6 +343,13 @@ export class AnalyzerService {
       // The step keeps its old id so runs in progress during a deploy still report it.
       await this.setStep(job, 'insights');
       const faq = await this.answerFaq(components, connections, views, paths);
+      const documentable = paths.filter(isDocumentable);
+      const suggestions = suggestFiles({
+        paths: documentable,
+        components,
+        views: views.graphs,
+        imports,
+      });
 
       await this.complete(
         job,
@@ -132,15 +362,24 @@ export class AnalyzerService {
           faq,
         },
         views,
+        this.filesItem(job, commit, documentable, suggestions),
       );
       this.logger.log(`Analysis ${job.analysisId} complete`);
-      return true;
+      return {
+        repoDir,
+        commit,
+        components,
+        api: views.graphs.api,
+        imports,
+        documentable,
+        suggestions,
+      };
     } catch (err) {
       if (err instanceof SupersededError) {
         this.logger.warn(
           `Analysis ${job.analysisId} was replaced by a newer run`,
         );
-        return true;
+        return 'superseded';
       }
       const cause = (err as Error).cause;
       this.logger.error(
@@ -158,10 +397,32 @@ export class AnalyzerService {
             : 'The analysis failed unexpectedly. Try running it again.',
       }).catch(() => undefined);
       return false;
-    } finally {
-      clearInterval(heartbeat);
-      await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  // The documentable file list and the suggestions for the file picker, saved with the
+  // graph by `complete`.
+  private filesItem(
+    job: AnalysisJob,
+    commit: string,
+    documentable: string[],
+    suggestions: DocSuggestion[],
+  ): FilesItem {
+    let paths = documentable;
+    let packed = packPaths(paths);
+    // Only a repository of very long paths gets near the item limit; keep what fits.
+    while (packed.byteLength > MAX_GRAPH_BYTES) {
+      paths = paths.slice(0, Math.floor(paths.length * 0.8));
+      packed = packPaths(paths);
+    }
+    return {
+      PK: userKey(job.userId),
+      SK: filesKey(job.projectId),
+      analysisId: job.analysisId,
+      commit,
+      paths: packed,
+      suggestions,
+    };
   }
 
   // A read-only token for this one repository when it's private; none for public ones.
@@ -333,12 +594,14 @@ export class AnalyzerService {
       }));
   }
 
-  // Saves the graph and marks the run complete in one transaction, so a run that a newer
-  // one has replaced can't overwrite the newer graph.
+  // Saves the graph, views, and file list and marks the run complete in one transaction, so
+  // a run that a newer one has replaced can't overwrite the newer results. The update's own
+  // condition guards every write, so no separate ConditionCheck (and IAM action) is needed.
   private async complete(
     job: AnalysisJob,
     graph: ArchitectureGraph,
     views: BuiltViews,
+    files: FilesItem,
   ) {
     const item: GraphItem = {
       PK: userKey(job.userId),
@@ -373,6 +636,7 @@ export class AnalyzerService {
         new TransactWriteCommand({
           TransactItems: [
             { Put: { TableName: this.tableName, Item: item } },
+            { Put: { TableName: this.tableName, Item: files } },
             ...viewWrites,
             {
               Update: {

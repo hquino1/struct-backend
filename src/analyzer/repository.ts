@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AnalysisStats } from '../analyses/analysis.entity.js';
@@ -59,6 +59,44 @@ export async function cloneRepository(
   }
   const { stdout } = await run('git', ['rev-parse', 'HEAD'], { cwd: dir });
   return stdout.trim();
+}
+
+// Shallow checkout of one commit, e.g. the one an analysis read after its branch moved on.
+// GitHub serves any commit by SHA.
+export async function cloneCommit(
+  repoUrl: string,
+  commit: string,
+  dir: string,
+  token?: string,
+): Promise<void> {
+  const options = {
+    cwd: dir,
+    timeout: 10 * 60 * 1000,
+    env: {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      ...(token && githubAuthEnv(token)),
+    },
+  };
+  try {
+    await mkdir(dir, { recursive: true });
+    await run('git', ['init', '--quiet'], options);
+    await run(
+      'git',
+      ['fetch', '--quiet', '--depth=1', '--', repoUrl, commit],
+      options,
+    );
+    await run(
+      'git',
+      ['checkout', '--quiet', '--detach', 'FETCH_HEAD'],
+      options,
+    );
+  } catch (err) {
+    throw new AnalysisError(
+      `Couldn't read commit ${commit.slice(0, 7)} from the repository. Re-analyze the project and try again.`,
+      { cause: (err as { stderr?: string }).stderr?.trim() || err },
+    );
+  }
 }
 
 // Directories that hold dependencies, build output, or VCS data rather than the project's code.

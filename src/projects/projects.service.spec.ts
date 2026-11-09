@@ -209,31 +209,43 @@ describe('ProjectsService.listBranches', () => {
 });
 
 describe('ProjectsService.remove', () => {
-  it('deletes the project, its graph, and every view in one transaction', async () => {
-    const { db, service } = setup(() => ({}));
+  // Answers the doc-key query; everything else goes to `transact`.
+  const withDocs = (transact: () => unknown) => (command: { input: any }) =>
+    command.input.KeyConditionExpression
+      ? { Items: [{ SK: `DOC#${projectId}#src/main.ts` }] }
+      : transact();
+
+  it('deletes the project, its graph, views, file list, and docs in one transaction', async () => {
+    const { db, service } = setup(withDocs(() => ({})));
 
     await service.remove('u1', projectId);
 
-    const { input } = db.send.mock.calls[0][0];
+    const { input } = db.send.mock.calls.find(
+      ([command]) => command.input.TransactItems,
+    )![0];
     const keys = input.TransactItems.map(
       (t: { Delete: { Key: { SK: string } } }) => t.Delete.Key.SK,
     );
     expect(keys[0]).toBe(`PROJECT#${projectId}`);
     expect(keys).toContain(`GRAPH#${projectId}`);
     expect(keys).toContain(`VIEW#${projectId}#ci-cd`);
+    expect(keys).toContain(`FILES#${projectId}`);
+    expect(keys).toContain(`DOC#${projectId}#src/main.ts`);
     expect(input.TransactItems[0].Delete.ConditionExpression).toBe(
       'attribute_exists(SK)',
     );
   });
 
   it('reports a missing project as not found', async () => {
-    const { service } = setup(() => {
-      throw new TransactionCanceledException({
-        message: 'cancelled',
-        $metadata: {},
-        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
-      });
-    });
+    const { service } = setup(
+      withDocs(() => {
+        throw new TransactionCanceledException({
+          message: 'cancelled',
+          $metadata: {},
+          CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+        });
+      }),
+    );
 
     await expect(service.remove('u1', projectId)).rejects.toBeInstanceOf(
       NotFoundException,

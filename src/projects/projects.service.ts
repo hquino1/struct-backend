@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
 import { graphKey, NOT_STARTED, viewKey } from '../analyses/analysis.entity.js';
+import { docPrefix, filesKey } from '../docs/docs.entity.js';
 import { VIEW_IDS } from '../analyzer/views/view-graph.js';
 import { DYNAMODB_CLIENT } from '../dynamodb/dynamodb.constants.js';
 import type { RepositoryBranches } from '../github/github.entity.js';
@@ -172,6 +173,29 @@ export class ProjectsService {
     }
   }
 
+  // A project has at most MAX_DOC_FILES docs, plus any kept from files that later failed.
+  private async docKeys(pk: string, projectId: string) {
+    const keys: string[] = [];
+    let ExclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const page = await this.db.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+          ExpressionAttributeValues: {
+            ':pk': pk,
+            ':prefix': docPrefix(projectId),
+          },
+          ProjectionExpression: 'SK',
+          ExclusiveStartKey,
+        }),
+      );
+      keys.push(...(page.Items ?? []).map((item) => item.SK as string));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+    return keys;
+  }
+
   private async findItem(
     userId: string,
     projectId: string,
@@ -186,14 +210,17 @@ export class ProjectsService {
     return Item as ProjectItem;
   }
 
-  // Removes the project with its saved graph and views in one transaction. A run still in
-  // progress can't bring them back: every worker write is conditioned on the project's
-  // current analysisId, which no longer exists, so the worker stops at its next write.
+  // Removes the project with its saved graph, views, file list, and docs in one
+  // transaction. A run still in progress can't bring them back: every worker write is
+  // conditioned on the project's current analysisId or docs runId, which no longer exist,
+  // so the worker stops at its next write.
   async remove(userId: string, projectId: string): Promise<void> {
     const pk = userKey(userId);
     const derived = [
       graphKey(projectId),
+      filesKey(projectId),
       ...VIEW_IDS.map((view) => viewKey(projectId, view)),
+      ...(await this.docKeys(pk, projectId)),
     ];
     try {
       await this.db.send(
